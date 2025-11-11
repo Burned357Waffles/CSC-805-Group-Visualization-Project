@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* --- Design tokens (optional; keep if you like) --- */
+:root {
+  /* you can add custom colors/tokens here later */
+}
+
+/* --- Base reset & typography --- */
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+  }
+
+  /* Remove the “border everywhere” rule that caused the wireframe look */
+  /* DO NOT set border/outline on * (the universal selector) */
+}
+
+/* --- Helpers for consistent cards/containers (used by Overview) --- */
+@layer components {
+  .app-container {
+    @apply mx-auto w-full max-w-7xl px-4 py-6 md:px-6 lg:px-8;
+  }
+
+  .card {
+    @apply rounded-xl border border-slate-200 bg-white shadow-sm;
+  }
+
+  .kpi-card {
+    @apply card p-4;
+  }
+
+  .subtle {
+    @apply text-sm text-slate-500;
+  }
+
+  .section-title {
+    @apply text-sm font-medium text-slate-700;
+  }
+}
