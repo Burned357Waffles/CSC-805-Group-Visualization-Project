@@ -1,9 +1,37 @@
 // src/App.tsx
 import { useState } from "react";
 import Overview from "./Overview";
+import StateProfile from "./StateProfile"; // uses your existing file
+
+// Simple in-file stubs so navigation works now.
+// Replace these with real files later (and remove the stubs).
+function CompareStatesStub() {
+  return (
+    <div className="card p-6">
+      <h2 className="text-xl font-semibold">Compare States</h2>
+      <p className="text-sm text-slate-600 mt-2">
+        This is a temporary placeholder. Create <code>src/CompareStates.tsx</code> and
+        import it here when ready.
+      </p>
+    </div>
+  );
+}
+function HesitancyVsUptakeStub() {
+  return (
+    <div className="card p-6">
+      <h2 className="text-xl font-semibold">Hesitancy vs Uptake</h2>
+      <p className="text-sm text-slate-600 mt-2">
+        This is a temporary placeholder. Create <code>src/HesitancyVsUptake.tsx</code>{" "}
+        and import it here when ready.
+      </p>
+    </div>
+  );
+}
+
+type TabKey = "overview" | "state" | "compare" | "hesitancy";
 
 export default function App() {
-  const [active, setActive] = useState<"overview" | "state" | "compare" | "hesitancy">("overview");
+  const [active, setActive] = useState<TabKey>("overview");
 
   return (
     <div className="min-h-screen bg-[oklch(0.985_0_0)] text-[oklch(0.145_0_0)]">
@@ -24,14 +52,14 @@ export default function App() {
             ].map((t) => (
               <button
                 key={t.id}
-                onClick={() => setActive(t.id as any)}
+                onClick={() => setActive(t.id as TabKey)}
                 className={
                   "transition-colors hover:text-white/85 " +
-                  (active === t.id
+                  (active === (t.id as TabKey)
                     ? "font-semibold text-white"
                     : "text-white/70")
                 }
-                aria-current={active === t.id ? "page" : undefined}
+                aria-current={active === (t.id as TabKey) ? "page" : undefined}
               >
                 {t.label}
               </button>
@@ -51,11 +79,9 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-6 py-6">
         {active === "overview" && <Overview />}
-        {active !== "overview" && (
-          <div className="text-sm text-slate-600">
-            This tab is not implemented yet—finish Overview first, then we’ll scaffold the rest.
-          </div>
-        )}
+        {active === "state" && <StateProfile />}
+        {active === "compare" && <CompareStatesStub />}
+        {active === "hesitancy" && <HesitancyVsUptakeStub />}
       </main>
     </div>
   );

@@ -1,4 +1,3 @@
-// src/components/FilterRail.tsx
 import { useState } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { US_STATES_50 } from "../lib/usStates";
@@ -11,8 +10,6 @@ export default function FilterRail() {
   const setWeek = useAppStore((s) => s.setWeek);
   const state = useAppStore((s) => s.state);
   const setState = useAppStore((s) => s.setState);
-  const applyFilters = useAppStore((s) => s.apply);
-  const resetFilters = useAppStore((s) => s.clear);
 
   // local UI focus (optional – keeps native select happy)
   const [localState, setLocalState] = useState(state ?? "All states");
@@ -93,9 +90,9 @@ export default function FilterRail() {
         <button
           className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500"
           onClick={() => {
+            // “Apply”: push local controls into the store
             setState(localState === "All states" ? undefined : localState);
             setWeek(localWeek);
-            applyFilters();
           }}
         >
           Apply
@@ -103,9 +100,13 @@ export default function FilterRail() {
         <button
           className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50"
           onClick={() => {
+            // “Clear”: reset local inputs and store values to defaults
             setLocalState("All states");
             setLocalWeek(week);
-            resetFilters();
+            setState(undefined);
+            setWeek(week);
+            // (Optionally reset outcome here if you want)
+            // setOutcome("cases_per_100k");
           }}
         >
           Clear
