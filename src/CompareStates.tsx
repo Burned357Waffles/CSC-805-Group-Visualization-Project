@@ -1,4 +1,4 @@
-// src/CompareStates.tsx
+// (same as your last version; included verbatim for completeness)
 import { useEffect, useMemo, useState } from "react";
 import {
   LineChart,
@@ -17,6 +17,7 @@ import {
 import { MOCK_NATIONAL_TIMELINE } from "./lib/mock";
 import { US_STATES_50 } from "./lib/usStates";
 import { cn } from "./lib/utils";
+import KpiCard from "./components/KpiCard";
 
 /* ------------------------------------------------------------------ */
 /* Helpers – generate per-state weekly series from the national mock  */
@@ -124,111 +125,34 @@ function Chip({
   );
 }
 
-function SparkLine({ values, stroke }: { values: number[]; stroke: string }) {
-  const n = values.length;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const pts = values.map((v, i) => {
-    const x = (i / (n - 1)) * 100;
-    const y = 100 - ((v - min) / span) * 100;
-    return `${x},${y}`;
-  });
-  return (
-    <svg viewBox="0 0 100 100" className="h-3 w-14">
-      <polyline
-        fill="none"
-        stroke={stroke}
-        strokeWidth={2.25}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        points={pts.join(" ")}
-      />
-    </svg>
-  );
-}
+/* ------------------------------------------------------------------ */
+/* Inside-left Y-axis label (inline; no extra file)                    */
+/* ------------------------------------------------------------------ */
 
-// ——— KPI “tiny” card (smaller typography + anchored change pill) ———
-function TinyKpi({
-  title,
+type VB = { x: number; y: number; width: number; height: number };
+
+function InsideLeftYAxisLabel({
   value,
-  suffix,
-  color,
-  series,
-  deltaPct,
+  dx = 10,
+  yPct = 0.75,
+  className = "fill-[#475569] text-[12px]",
+  viewBox,
 }: {
-  title: string;
-  value: string | number;
-  suffix?: string;
-  color: string;
-  series: number[];
-  deltaPct: number;
+  value: string;
+  dx?: number;
+  yPct?: number;           // 0..1 — vertical position within plotting area
+  className?: string;      // tailwind-compatible classes
+  viewBox?: VB;            // injected by Recharts
 }) {
-  const up = deltaPct >= 0;
+  if (!viewBox) return null;
+  const x = viewBox.x + dx;
+  const y = viewBox.y + viewBox.height * yPct;
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-      {/* value + inline delta */}
-      <div className="flex items-baseline gap-1.5 pr-2">
-        <div className="text-[14px] font-semibold leading-tight text-slate-900">
-          {value}
-        </div>
-        {suffix && (
-          <div className="text-[10px] leading-tight text-slate-500">{suffix}</div>
-        )}
-        <div
-          className={cn(
-            "ml-auto flex items-center gap-1 text-[11px] leading-none",
-            up ? "text-emerald-600" : "text-rose-600"
-          )}
-          aria-label="week-over-week change"
-        >
-          {/* tiny squiggle arrow */}
-          <svg width="12" height="6" viewBox="0 0 20 10" className="inline-block">
-            <path
-              d="M1 5 C4 2, 7 8, 10 5 C13 2, 16 8, 19 5"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              strokeLinecap="round"
-              fill="none"
-            />
-          </svg>
-          {deltaPct.toFixed(1)}%
-        </div>
-      </div>
-
-      {/* sparkline as a light divider */}
-      <div className="mt-1">
-        <svg viewBox="0 0 100 18" className="h-3 w-full">
-          {(() => {
-            const n = series.length || 1;
-            const min = Math.min(...series);
-            const max = Math.max(...series);
-            const span = max - min || 1;
-            const pts = series.map((v, i) => {
-              const x = (i / (n - 1)) * 100;
-              const y = 16 - ((v - min) / span) * 16;
-              return `${x},${y}`;
-            });
-            return (
-              <polyline
-                fill="none"
-                stroke={color}
-                strokeWidth={1.7}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                points={pts.join(" ")}
-              />
-            );
-          })()}
-        </svg>
-      </div>
-
-      {/* label under sparkline */}
-      <div className="mt-1 text-[11px] font-medium text-slate-500">{title}</div>
-    </div>
+    <text x={x} y={y} className={className} transform={`rotate(-90, ${x}, ${y})`}>
+      {value}
+    </text>
   );
 }
-
 
 /* ------------------------------------------------------------------ */
 /* Main component                                                      */
@@ -357,14 +281,6 @@ export default function CompareStates() {
     });
     return points;
   }, [chosen, seriesByState, animEnd, lag, outcome]);
-
-  // helper to render several YAxis labels consistently centered (avoid clipping)
-  const yLabel = (text: string) => ({
-    value: text,
-    angle: -90,
-    position: "insideLeft" as const,
-    offset: 18,
-  });
 
   // custom tooltip for line charts: drop helper layers (empty name)
   const renderLineTooltip = (props: any) => {
@@ -578,66 +494,76 @@ export default function CompareStates() {
             ) : (
               <>
                 {/* KPI strip */}
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {kpiStrip.map((k) => (
                     <div
                       key={k.state}
                       className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
                     >
-                      <div className="mb-2 text-base font-semibold text-slate-800">
+                      <div className="mb-3 text-base font-semibold text-slate-800">
                         {k.state}
                       </div>
+
+                      {/* 2×2 compact KPI grid */}
                       <div className="grid grid-cols-2 gap-3">
-                        <TinyKpi
-                          title="Vaccination %"
+                        <KpiCard
+                          size="micro"
+                          label="Vaccination (Any Dose) %"
                           value={`${k.vac.toFixed(1)}%`}
-                          color={k.color}
-                          series={k.tail.map((p) => p.vaccination_any_pct)}
-                          deltaPct={k.vacDelta}
+                          delta={`~ ${k.vacDelta.toFixed(1)}%`}
+                          spark={k.tail.map((p) => p.vaccination_any_pct)}
+                          colorClass="text-indigo-400"
+                          hint={`Week ending W${String(animEnd).padStart(2, "0")}`}
                         />
-                        <TinyKpi
-                          title="Cases/100k"
+
+                        <KpiCard
+                          size="micro"
+                          label="Cases / 100k (weekly)"
                           value={k.cases.toFixed(1)}
                           suffix="/100k"
-                          color={k.color}
-                          series={k.tail.map((p) => p.cases_per_100k)}
-                          deltaPct={k.casesDelta}
+                          delta={`~ ${k.casesDelta.toFixed(1)}`}
+                          spark={k.tail.map((p) => p.cases_per_100k)}
+                          colorClass="text-orange-400"
+                          hint={`Week ending W${String(animEnd).padStart(2, "0")}`}
                         />
-                        <TinyKpi
-                          title="Deaths/100k"
+
+                        <KpiCard
+                          size="micro"
+                          label="Deaths / 100k (weekly)"
                           value={k.deaths.toFixed(1)}
                           suffix="/100k"
-                          color={k.color}
-                          series={k.tail.map((p) => p.deaths_per_100k)}
-                          deltaPct={k.deathsDelta}
+                          delta={`~ ${k.deathsDelta.toFixed(2)}`}
+                          spark={k.tail.map((p) => p.deaths_per_100k)}
+                          colorClass="text-rose-400"
+                          hint={`Week ending W${String(animEnd).padStart(2, "0")}`}
                         />
-                        <TinyKpi
-                          title="Hesitancy %"
+
+                        <KpiCard
+                          size="micro"
+                          label="Hesitancy % (CDC est.)"
                           value={`${k.hes.toFixed(1)}%`}
-                          color={k.color}
-                          series={k.tail.map((p) => p.hesitancy_pct)}
-                          deltaPct={k.hesDelta}
+                          delta={`~ ${k.hesDelta.toFixed(1)}%`}
+                          spark={k.tail.map((p) => p.hesitancy_pct)}
+                          colorClass="text-violet-400"
+                          hint="Latest estimate"
                         />
                       </div>
                     </div>
                   ))}
                 </div>
 
-                {/* Vaccination % multi-state line (static + emphasis + marker) */}
+                {/* (charts unchanged) */}
+                {/* Vaccination % */}
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h3 className="text-lg font-semibold text-slate-900">
-                    Vaccination %
-                  </h3>
+                  <h3 className="text-lg font-semibold text-slate-900">Vaccination %</h3>
                   <div className="mt-3 h-[300px]">
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart>
-                        {/* blur filter for base layer */}
                         <defs>
                           <filter id="svgBlur" x="-5%" y="-5%" width="110%" height="110%">
                             <feGaussianBlur in="SourceGraphic" stdDeviation={0.6} />
                           </filter>
                         </defs>
-
                         <CartesianGrid stroke="#e5e7eb" strokeDasharray="4 4" />
                         <XAxis
                           dataKey="weekLabel"
@@ -648,17 +574,15 @@ export default function CompareStates() {
                         <YAxis
                           domain={[0, 100]}
                           tick={{ fontSize: 11 }}
-                          label={yLabel("% of population")}
+                          label={<InsideLeftYAxisLabel value="% of population" />}
                         />
                         <Tooltip content={renderLineTooltip} />
                         <Legend />
-
-                        {/* subtle emphasis: base (dimmed/blurred/dashed) + overlay (bright up to animEnd) */}
                         {Array.from(fullInRange.entries()).map(([state, arr]) => (
                           <Line
                             key={`${state}-base-v`}
                             dataKey="vaccination_any_pct"
-                            name=""                     // hide in legend & tooltip
+                            name=""
                             legendType="none"
                             data={arr}
                             type="monotone"
@@ -683,14 +607,7 @@ export default function CompareStates() {
                             stroke={stateColor(state)}
                           />
                         ))}
-
-                        {/* vertical current-week marker */}
-                        <ReferenceLine
-                          x={toW(animEnd)}
-                          stroke="#94a3b8"
-                          strokeDasharray="3 3"
-                        />
-                        {/* small dot at current week for each state */}
+                        <ReferenceLine x={toW(animEnd)} stroke="#94a3b8" strokeDasharray="3 3" />
                         {Array.from(clipped.entries()).map(([state, arr]) => {
                           const last = arr[arr.length - 1];
                           if (!last) return null;
@@ -711,21 +628,17 @@ export default function CompareStates() {
                   </div>
                 </div>
 
-                {/* Cases per 100k (static + emphasis + marker) */}
+                {/* Cases per 100k */}
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h3 className="text-lg font-semibold text-slate-900">
-                    Cases per 100k
-                  </h3>
+                  <h3 className="text-lg font-semibold text-slate-900">Cases per 100k</h3>
                   <div className="mt-3 h-[280px]">
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart>
-                        {/* blur filter for base layer */}
                         <defs>
                           <filter id="svgBlur" x="-5%" y="-5%" width="110%" height="110%">
                             <feGaussianBlur in="SourceGraphic" stdDeviation={0.6} />
                           </filter>
                         </defs>
-
                         <CartesianGrid stroke="#e5e7eb" strokeDasharray="4 4" />
                         <XAxis
                           dataKey="weekLabel"
@@ -735,11 +648,10 @@ export default function CompareStates() {
                         />
                         <YAxis
                           tick={{ fontSize: 11 }}
-                          label={yLabel("Weekly cases per 100k")}
+                          label={<InsideLeftYAxisLabel value="Weekly cases per 100k" />}
                         />
                         <Tooltip content={renderLineTooltip} />
                         <Legend />
-
                         {Array.from(fullInRange.entries()).map(([state, arr]) => (
                           <Line
                             key={`${state}-base-c`}
@@ -769,12 +681,7 @@ export default function CompareStates() {
                             stroke={stateColor(state)}
                           />
                         ))}
-
-                        <ReferenceLine
-                          x={toW(animEnd)}
-                          stroke="#94a3b8"
-                          strokeDasharray="3 3"
-                        />
+                        <ReferenceLine x={toW(animEnd)} stroke="#94a3b8" strokeDasharray="3 3" />
                         {Array.from(clipped.entries()).map(([state, arr]) => {
                           const last = arr[arr.length - 1];
                           if (!last) return null;
@@ -795,21 +702,17 @@ export default function CompareStates() {
                   </div>
                 </div>
 
-                {/* Deaths per 100k (static + emphasis + marker) */}
+                {/* Deaths per 100k */}
                 <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <h3 className="text-lg font-semibold text-slate-900">
-                    Deaths per 100k
-                  </h3>
+                  <h3 className="text-lg font-semibold text-slate-900">Deaths per 100k</h3>
                   <div className="mt-3 h-[280px]">
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart>
-                        {/* blur filter for base layer */}
                         <defs>
                           <filter id="svgBlur" x="-5%" y="-5%" width="110%" height="110%">
                             <feGaussianBlur in="SourceGraphic" stdDeviation={0.6} />
                           </filter>
                         </defs>
-
                         <CartesianGrid stroke="#e5e7eb" strokeDasharray="4 4" />
                         <XAxis
                           dataKey="weekLabel"
@@ -819,11 +722,10 @@ export default function CompareStates() {
                         />
                         <YAxis
                           tick={{ fontSize: 11 }}
-                          label={yLabel("Weekly deaths per 100k")}
+                          label={<InsideLeftYAxisLabel value="Weekly deaths per 100k" />}
                         />
                         <Tooltip content={renderLineTooltip} />
                         <Legend />
-
                         {Array.from(fullInRange.entries()).map(([state, arr]) => (
                           <Line
                             key={`${state}-base-d`}
@@ -853,12 +755,7 @@ export default function CompareStates() {
                             stroke={stateColor(state)}
                           />
                         ))}
-
-                        <ReferenceLine
-                          x={toW(animEnd)}
-                          stroke="#94a3b8"
-                          strokeDasharray="3 3"
-                        />
+                        <ReferenceLine x={toW(animEnd)} stroke="#94a3b8" strokeDasharray="3 3" />
                         {Array.from(clipped.entries()).map(([state, arr]) => {
                           const last = arr[arr.length - 1];
                           if (!last) return null;
@@ -913,11 +810,15 @@ export default function CompareStates() {
                           type="number"
                           dataKey="y"
                           tick={{ fontSize: 11 }}
-                          label={yLabel(
-                            outcome === "cases"
-                              ? "Cases per 100k (weekly, lag)"
-                              : "Deaths per 100k (weekly, lag)"
-                          )}
+                          label={
+                            <InsideLeftYAxisLabel
+                              value={
+                                outcome === "cases"
+                                  ? "Cases per 100k (weekly, lag)"
+                                  : "Deaths per 100k (weekly, lag)"
+                              }
+                            />
+                          }
                         />
                         <Tooltip
                           formatter={(val: any, name: any) => {
@@ -949,9 +850,7 @@ export default function CompareStates() {
                             shape={(props) => {
                               const r = Math.max(6, Math.min(24, 6 + (pt.z / 100) * 18));
                               const { cx, cy, fill } = props as any;
-                              return (
-                                <circle cx={cx} cy={cy} r={r} fill={fill} opacity={0.9} />
-                              );
+                              return <circle cx={cx} cy={cy} r={r} fill={fill} opacity={0.9} />;
                             }}
                           />
                         ))}
