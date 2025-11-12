@@ -1,19 +1,28 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { US_STATES_50 } from "../lib/usStates";
 import { cn } from "../lib/utils";
 
 export default function FilterRail() {
-  const activeOutcome = useAppStore((s) => s.outcome);
+  const outcome = useAppStore((s) => s.outcome);
   const setOutcome = useAppStore((s) => s.setOutcome);
-  const week = useAppStore((s) => s.week);
-  const setWeek = useAppStore((s) => s.setWeek);
-  const state = useAppStore((s) => s.state);
+
+  const storeState = useAppStore((s) => s.state);
   const setState = useAppStore((s) => s.setState);
 
-  // local UI focus (optional – keeps native select happy)
-  const [localState, setLocalState] = useState(state ?? "All states");
-  const [localWeek, setLocalWeek] = useState<number>(week);
+  const rangeEnd = useAppStore((s) => s.rangeEnd);
+  const setWeek = useAppStore((s) => s.setWeek);
+  const setRange = useAppStore((s) => s.setRange);
+
+  // Local mirrors for controlled inputs
+  const [localState, setLocalState] = useState(storeState ?? "All states");
+  const [localWeek, setLocalWeek] = useState<number>(rangeEnd);
+
+  // Keep selects in sync if map or other controls change the store
+  useEffect(() => setLocalState(storeState ?? "All states"), [storeState]);
+  useEffect(() => setLocalWeek(rangeEnd), [rangeEnd]);
+
+  const clearState = () => setState("All states");
 
   return (
     <aside className="card sticky top-28 h-fit p-4">
@@ -24,19 +33,30 @@ export default function FilterRail() {
         <label htmlFor="state" className="text-sm font-medium text-slate-600">
           State
         </label>
-        <select
-          id="state"
-          className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-0 focus:border-slate-400"
-          value={localState}
-          onChange={(e) => setLocalState(e.target.value)}
-        >
-          <option>All states</option>
-          {US_STATES_50.map((st) => (
-            <option key={st} value={st}>
-              {st}
-            </option>
-          ))}
-        </select>
+        <div className="flex gap-2">
+          <select
+            id="state"
+            className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-0 focus:border-slate-400"
+            value={localState}
+            onChange={(e) => setLocalState(e.target.value)}
+          >
+            <option>All states</option>
+            {US_STATES_50.map((st) => (
+              <option key={st} value={st}>{st}</option>
+            ))}
+          </select>
+          {localState !== "All states" && (
+            <button
+              type="button"
+              className="shrink-0 rounded-md border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-700 hover:bg-slate-50"
+              onClick={() => { setLocalState("All states"); clearState(); }}
+              aria-label="Clear state"
+              title="Clear state"
+            >
+              Clear
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Outcome toggle */}
@@ -46,9 +66,7 @@ export default function FilterRail() {
           <button
             className={cn(
               "rounded-md border px-3 py-2 text-sm",
-              activeOutcome === "cases_per_100k"
-                ? "border-slate-800 bg-slate-900 text-white"
-                : "border-slate-200 bg-white hover:bg-slate-50"
+              outcome === "cases_per_100k" ? "border-slate-800 bg-slate-900 text-white" : "border-slate-200 bg-white hover:bg-slate-50"
             )}
             onClick={() => setOutcome("cases_per_100k")}
           >
@@ -57,9 +75,7 @@ export default function FilterRail() {
           <button
             className={cn(
               "rounded-md border px-3 py-2 text-sm",
-              activeOutcome === "deaths_per_100k"
-                ? "border-slate-800 bg-slate-900 text-white"
-                : "border-slate-200 bg-white hover:bg-slate-50"
+              outcome === "deaths_per_100k" ? "border-slate-800 bg-slate-900 text-white" : "border-slate-200 bg-white hover:bg-slate-50"
             )}
             onClick={() => setOutcome("deaths_per_100k")}
           >
@@ -68,10 +84,10 @@ export default function FilterRail() {
         </div>
       </div>
 
-      {/* Week slider (dummy wired to store) */}
+      {/* Selected week (snaps the brush to a 1-week window) */}
       <div className="mt-6 space-y-2">
         <label htmlFor="week" className="text-sm font-medium text-slate-600">
-          Week ending
+          Selected week
         </label>
         <input
           id="week"
@@ -90,9 +106,9 @@ export default function FilterRail() {
         <button
           className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500"
           onClick={() => {
-            // “Apply”: push local controls into the store
-            setState(localState === "All states" ? undefined : localState);
-            setWeek(localWeek);
+            setState(localState || "All states");
+            setWeek(localWeek);              // snaps brush
+            setRange(localWeek, localWeek);  // explicit 1-week window
           }}
         >
           Apply
@@ -100,13 +116,10 @@ export default function FilterRail() {
         <button
           className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50"
           onClick={() => {
-            // “Clear”: reset local inputs and store values to defaults
             setLocalState("All states");
-            setLocalWeek(week);
-            setState(undefined);
-            setWeek(week);
-            // (Optionally reset outcome here if you want)
-            // setOutcome("cases_per_100k");
+            setLocalWeek(rangeEnd);
+            setState("All states");
+            setRange(rangeEnd, rangeEnd);
           }}
         >
           Clear

@@ -7,25 +7,21 @@ import {
   Line,
   Legend,
   Tooltip,
+  Brush,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui";
 import { MOCK_NATIONAL_TIMELINE } from "../lib/mock";
+import { useAppStore } from "../store/useAppStore";
 
-// Figmapalette
-const COLORS = {
-  cases: "#f59e0b", // orange
-  deaths: "#ef4444", // red
-  any: "#2563eb", // blue
-  primary: "#10b981", // green
-};
+// Palette (unchanged)
+const COLORS = { cases: "#f59e0b", deaths: "#ef4444", any: "#2563eb", primary: "#10b981" };
 
 function formatWeekLabel(weekStr: string) {
-  // Data is "2024-W##" — show just the number
   const m = weekStr.match(/W(\d+)/);
   return m ? m[1] : weekStr;
 }
 
-// A very light custom legend that looks like Figma’s
+// Tiny dot for legend labels
 function Dot({ color }: { color: string }) {
   return (
     <span
@@ -42,64 +38,30 @@ function Dot({ color }: { color: string }) {
   );
 }
 
+// Clean legend labels (no underscores) — centered now
 function LegendContent() {
   return (
-    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 pb-2">
-      <span className="text-sm text-slate-700">
-        <Dot color={COLORS.cases} />
-        Cases/100k
-      </span>
-      <span className="text-sm text-slate-700">
-        <Dot color={COLORS.any} />
-        Coverage (Any)
-      </span>
-      <span className="text-sm text-slate-700">
-        <Dot color={COLORS.primary} />
-        Coverage (Primary)
-      </span>
-      <span className="text-sm text-slate-700">
-        <Dot color={COLORS.deaths} />
-        Deaths/100k
-      </span>
+    <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 px-4 pb-2">
+      <span className="text-sm text-slate-700"><Dot color={COLORS.cases} />Cases/100k</span>
+      <span className="text-sm text-slate-700"><Dot color={COLORS.deaths} />Deaths/100k</span>
+      <span className="text-sm text-slate-700"><Dot color={COLORS.any} />Coverage (Any)</span>
+      <span className="text-sm text-slate-700"><Dot color={COLORS.primary} />Coverage (Primary)</span>
     </div>
   );
 }
 
-// Keep tooltip simple and crisp
-function CustomTooltip({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean;
-  payload?: any[];
-  label?: string;
-}) {
+// Polished tooltip
+function CustomTooltip({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string; }) {
   if (!active || !payload || !payload.length) return null;
-  const p = Object.fromEntries(
-    payload.map((d) => [d.dataKey as string, d.value as number])
-  );
+  const p = Object.fromEntries(payload.map((d) => [d.dataKey as string, d.value as number]));
   return (
     <div className="rounded-md border bg-white p-2 text-xs shadow-sm">
       <div className="font-medium text-slate-700 mb-1">Week {formatWeekLabel(label ?? "")}</div>
       <div className="space-y-0.5">
-        <div className="text-slate-700">
-          <Dot color={COLORS.cases} />
-          Cases/100k: <span className="font-medium">{p.cases_per_100k?.toFixed(1)}</span>
-        </div>
-        <div className="text-slate-700">
-          <Dot color={COLORS.deaths} />
-          Deaths/100k: <span className="font-medium">{p.deaths_per_100k?.toFixed(2)}</span>
-        </div>
-        <div className="text-slate-700">
-          <Dot color={COLORS.any} />
-          Coverage (Any): <span className="font-medium">{p.vaccination_any_pct?.toFixed(1)}%</span>
-        </div>
-        <div className="text-slate-700">
-          <Dot color={COLORS.primary} />
-          Coverage (Primary):{" "}
-          <span className="font-medium">{p.vaccination_primary_pct?.toFixed(1)}%</span>
-        </div>
+        <div className="text-slate-700"><Dot color={COLORS.cases} />Cases/100k: <span className="font-medium">{p.cases_per_100k?.toFixed(1)}</span></div>
+        <div className="text-slate-700"><Dot color={COLORS.deaths} />Deaths/100k: <span className="font-medium">{p.deaths_per_100k?.toFixed(2)}</span></div>
+        <div className="text-slate-700"><Dot color={COLORS.any} />Coverage (Any): <span className="font-medium">{p.vaccination_any_pct?.toFixed(1)}%</span></div>
+        <div className="text-slate-700"><Dot color={COLORS.primary} />Coverage (Primary): <span className="font-medium">{p.vaccination_primary_pct?.toFixed(1)}%</span></div>
       </div>
     </div>
   );
@@ -107,6 +69,14 @@ function CustomTooltip({
 
 export default function NationalTimeline() {
   const data = MOCK_NATIONAL_TIMELINE;
+
+  const rangeStart = useAppStore((s) => s.rangeStart);
+  const rangeEnd = useAppStore((s) => s.rangeEnd);
+  const setRange = useAppStore((s) => s.setRange);
+
+  // Map brush indices (0-based) to week numbers (1..52)
+  const startIndex = Math.max(0, Math.min(rangeStart - 1, data.length - 1));
+  const endIndex = Math.max(0, Math.min(rangeEnd - 1, data.length - 1));
 
   return (
     <Card className="rounded-xl border bg-white shadow-sm">
@@ -119,33 +89,27 @@ export default function NationalTimeline() {
         <div className="h-[340px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={data} margin={{ top: 16, right: 24, left: 8, bottom: 12 }}>
-              {/* X axis shows week numbers 1..52 */}
+              {/* Show even-numbered weeks like “02 04 … 52” */}
               <XAxis
                 dataKey="week"
                 tickFormatter={formatWeekLabel}
+                interval={1}
                 tick={{ fontSize: 12, fill: "#475569" }}
                 axisLine={{ stroke: "#94a3b8" }}
                 tickLine={{ stroke: "#94a3b8" }}
               />
 
-              {/* LEFT Y: Coverage % (0-80) */}
+              {/* LEFT Y: Coverage % */}
               <YAxis
                 yAxisId="left"
                 domain={[0, 80]}
                 tick={{ fontSize: 12, fill: "#475569" }}
                 axisLine={{ stroke: "#94a3b8" }}
                 tickLine={{ stroke: "#94a3b8" }}
-                label={{
-                  value: "Coverage %",
-                  position: "insideLeft",
-                  angle: -90,
-                  offset: 10,
-                  fill: "#475569",
-                  fontSize: 12,
-                }}
+                label={{ value: "Coverage %", position: "insideLeft", angle: -90, offset: 10, fill: "#475569", fontSize: 12 }}
               />
 
-              {/* RIGHT Y: Per 100k (0-60) */}
+              {/* RIGHT Y: Per 100k */}
               <YAxis
                 yAxisId="right"
                 orientation="right"
@@ -153,83 +117,46 @@ export default function NationalTimeline() {
                 tick={{ fontSize: 12, fill: "#475569" }}
                 axisLine={{ stroke: "#94a3b8" }}
                 tickLine={{ stroke: "#94a3b8" }}
-                label={{
-                  value: "Per 100k",
-                  position: "insideRight",
-                  angle: -90,
-                  offset: 10,
-                  fill: "#475569",
-                  fontSize: 12,
-                }}
+                label={{ value: "Per 100k", position: "insideRight", angle: -90, offset: 10, fill: "#475569", fontSize: 12 }}
               />
 
-              {/* Vertical dashed gridlines only */}
+              {/* Grid */}
               <CartesianGrid vertical stroke="#cbd5e1" strokeDasharray="3 4" />
-              {/* Hide horizontal gridlines by drawing them white */}
               <CartesianGrid horizontal={false} />
 
               {/* Series */}
-              <Line
-                type="monotone"
-                dataKey="cases_per_100k"
-                yAxisId="right"
-                stroke={COLORS.cases}
-                strokeWidth={2.25}
-                dot={{ r: 3, fill: "#fff", stroke: COLORS.cases, strokeWidth: 2 }}
-                activeDot={{ r: 4 }}
-              />
-              <Line
-                type="monotone"
-                dataKey="deaths_per_100k"
-                yAxisId="right"
-                stroke={COLORS.deaths}
-                strokeWidth={2.25}
-                dot={{ r: 3, fill: "#fff", stroke: COLORS.deaths, strokeWidth: 2 }}
-                activeDot={{ r: 4 }}
-              />
-              <Line
-                type="monotone"
-                dataKey="vaccination_any_pct"
-                yAxisId="left"
-                stroke={COLORS.any}
-                strokeWidth={2.25}
-                dot={{ r: 3, fill: "#fff", stroke: COLORS.any, strokeWidth: 2 }}
-                activeDot={{ r: 4 }}
-              />
-              <Line
-                type="monotone"
-                dataKey="vaccination_primary_pct"
-                yAxisId="left"
-                stroke={COLORS.primary}
-                strokeWidth={2.25}
-                dot={{ r: 3, fill: "#fff", stroke: COLORS.primary, strokeWidth: 2 }}
-                activeDot={{ r: 4 }}
-              />
+              <Line type="monotone" dataKey="cases_per_100k" yAxisId="right" stroke={COLORS.cases} strokeWidth={2.25} dot={{ r: 3, fill: "#fff", stroke: COLORS.cases, strokeWidth: 2 }} activeDot={{ r: 4 }} />
+              <Line type="monotone" dataKey="deaths_per_100k" yAxisId="right" stroke={COLORS.deaths} strokeWidth={2.25} dot={{ r: 3, fill: "#fff", stroke: COLORS.deaths, strokeWidth: 2 }} activeDot={{ r: 4 }} />
+              <Line type="monotone" dataKey="vaccination_any_pct" yAxisId="left" stroke={COLORS.any} strokeWidth={2.25} dot={{ r: 3, fill: "#fff", stroke: COLORS.any, strokeWidth: 2 }} activeDot={{ r: 4 }} />
+              <Line type="monotone" dataKey="vaccination_primary_pct" yAxisId="left" stroke={COLORS.primary} strokeWidth={2.25} dot={{ r: 3, fill: "#fff", stroke: COLORS.primary, strokeWidth: 2 }} activeDot={{ r: 4 }} />
 
               <Tooltip content={<CustomTooltip />} />
-              <Legend verticalAlign="bottom" align="left" content={<LegendContent />} />
+
+              {/* Brush = single source of time selection */}
+              <Brush
+                dataKey="week"
+                startIndex={startIndex}
+                endIndex={endIndex}
+                onChange={(next) => {
+                  if (!next) return;
+                  const si = typeof next.startIndex === "number" ? next.startIndex : startIndex;
+                  const ei = typeof next.endIndex === "number" ? next.endIndex : endIndex;
+                  setRange(si + 1, ei + 1);
+                }}
+                travellerWidth={10}
+                stroke="#475569"
+                height={28}
+              />
+
+              {/* Centered legend (only change here) */}
+              <Legend
+                verticalAlign="bottom"
+                align="center"
+                wrapperStyle={{ width: "100%", textAlign: "center", paddingTop: 6 }}
+                content={<LegendContent />}
+              />
             </ComposedChart>
           </ResponsiveContainer>
-        </div>
-
-        {/* Faux “brush” area to mirror Figma visual until real brush is wired up */}
-        <div className="mt-4">
-          <div className="text-sm font-medium text-slate-700 mb-1">Time Range Selector</div>
-          <svg className="w-full h-16" viewBox="0 0 100 16" preserveAspectRatio="none" role="img">
-            <defs>
-              <linearGradient id="rangeGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.35" />
-                <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.05" />
-              </linearGradient>
-            </defs>
-            <path
-              d="M0,8 C15,12 35,4 50,6 C65,8 80,12 100,10 L100,16 L0,16 Z"
-              fill="url(#rangeGrad)"
-            />
-          </svg>
-          <p className="mt-1 text-xs text-slate-500">
-            Use the brush to adjust the timeframe shown in KPIs and map.
-          </p>
         </div>
       </CardContent>
     </Card>
