@@ -1,7 +1,8 @@
 // src/App.tsx
 import { useState } from "react";
 import Overview from "./Overview";
-import StateProfile from "./StateProfile"; // uses your existing file
+import StateProfile from "./StateProfile"; 
+import CompareStates from "./CompareStates";
 
 // Simple in-file stubs so navigation works now.
 // Replace these with real files later (and remove the stubs).
@@ -80,7 +81,7 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-6 py-6">
         {active === "overview" && <Overview />}
         {active === "state" && <StateProfile />}
-        {active === "compare" && <CompareStatesStub />}
+        {active === "compare" && <CompareStates />}
         {active === "hesitancy" && <HesitancyVsUptakeStub />}
       </main>
     </div>
