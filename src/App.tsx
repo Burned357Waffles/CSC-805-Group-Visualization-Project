@@ -3,6 +3,7 @@ import { useState } from "react";
 import Overview from "./Overview";
 import StateProfile from "./StateProfile"; 
 import CompareStates from "./CompareStates";
+import HesitancyVsUptake from "./HesitancyUptake";
 
 // Simple in-file stubs so navigation works now.
 // Replace these with real files later (and remove the stubs).
@@ -82,7 +83,7 @@ export default function App() {
         {active === "overview" && <Overview />}
         {active === "state" && <StateProfile />}
         {active === "compare" && <CompareStates />}
-        {active === "hesitancy" && <HesitancyVsUptakeStub />}
+        {active === "hesitancy" && <HesitancyVsUptake />}
       </main>
     </div>
   );
