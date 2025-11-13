@@ -607,6 +607,27 @@ export default function HesitancyUptake() {
                   </ScatterChart>
                 </ResponsiveContainer>
               </div>
+
+              {/* NEW: Scatter legend to match Longitudinal Paths legend */}
+              {hasSelection && (
+                <div className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-2">
+                  <div className="text-xs font-semibold text-slate-600">
+                    Selected States ({selected.length})
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-x-6 gap-y-2">
+                    {selected.map((s) => (
+                      <div key={`scatter-legend-${s}`} className="flex items-center gap-2">
+                        <span
+                          className="inline-block h-[3px] w-8 rounded-full"
+                          style={{ background: stateColor(s) }}
+                          aria-hidden
+                        />
+                        <span className="text-sm text-slate-700">{STATE_ABBR[s]}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* PATHS -------------------------------------------------------- */}
