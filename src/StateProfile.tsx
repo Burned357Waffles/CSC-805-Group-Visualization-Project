@@ -11,13 +11,16 @@ import {
   ScatterChart,
   Scatter,
 } from "recharts";
-import { US_STATES_50 } from "./lib/usStates";
+import { US_STATES_50, STATE_NAME_TO_USPS, State50 } from "./lib/usStates";
 import { MOCK_NATIONAL_TIMELINE } from "./lib/mock";
 import { cn } from "./lib/utils";
-import { Sparkline } from "./components/ui/chart"; // NEW: tiny bars like Overview
+import { Sparkline } from "./components/ui/chart"; // tiny bars like Overview
+import { useKpis, useNationalTimeline } from "./lib/data";
+import type { KpiCard as KpiDatum } from "./lib/types";
 
 /* -------------------------------------------------------------
    Helpers: synthesize per-state series from national mock data
+   (still used for the charts; KPIs now come from real data)
    ------------------------------------------------------------- */
 
 type SeriesPoint = {
@@ -123,41 +126,77 @@ function InsideLeftYAxisLabel(props: {
   );
 }
 
-
 /* -------------------------------------------------------------
    Component
    ------------------------------------------------------------- */
 
 export default function StateProfile() {
-  const [selectedState, setSelectedState] = useState<string>("Alabama");
+  const [selectedState, setSelectedState] = useState<State50>("Alabama");
   const [outcome, setOutcome] = useState<"cases" | "deaths">("cases");
   const [week, setWeek] = useState<number>(52);
   const [smoothing, setSmoothing] = useState<"off" | "ma">("off");
   const [lag, setLag] = useState<number>(0);
 
+  // Real national timeline (for ISO week mapping)
+  const { data: nat } = useNationalTimeline();
+
+  // Synthetic per-state series still power the charts for now
   const series = useMemo(() => genStateSeries(selectedState), [selectedState]);
 
-  // Week clamp + current KPI row
-  const wIdx = Math.max(1, Math.min(52, week)) - 1;
-  const kpi = series[wIdx];
-  const prev = series[Math.max(0, wIdx - 1)];
+  // Map full state name -> USPS to feed the KPI hook
+  const stateUsps = STATE_NAME_TO_USPS[selectedState] ?? undefined;
 
-  // Sparklines (last 10 pts) to match Overview KPI style
-  const last = <T,>(arr: T[], n = 10) => arr.slice(Math.max(0, arr.length - n));
-  const sparkVacc = last(series.map(p => p.vaccination_any_pct));
-  const sparkCases = last(series.map(p => p.cases_per_100k));
-  const sparkDeaths = last(series.map(p => p.deaths_per_100k));
-  const sparkHes = last(series.map(p => p.hesitancy_pct));
+  // Clamp the chosen week to the available national weeks
+  const natLength = nat?.length ?? 52;
+  const clampedWeek = Math.max(1, Math.min(week, natLength));
+  const natIdx = clampedWeek - 1;
+  const isoWeek = nat?.[natIdx]?.week ?? "";
 
-  // Simple week-over-week deltas to feed the green "~" pill
-  const delta = (curr?: number, pr?: number, digits = 1) =>
-    curr == null || pr == null ? 0 : Number((curr - pr).toFixed(digits));
+  // Real KPIs (state-aware) with spark bars
+  const { kpis } = useKpis(isoWeek, stateUsps);
+
+  // Build a quick lookup by KPI key
+  const kpiMap = useMemo(() => {
+    const m = new Map<string, KpiDatum>();
+    (kpis ?? []).forEach((c) => m.set(c.key, c));
+    return m;
+  }, [kpis]);
+
+  const getCard = (key: string): KpiDatum | undefined => kpiMap.get(key);
+
+  // Delta from the last two sparkline points, formatted like the green pill
+  const formatDeltaFromCard = (
+    card: KpiDatum | undefined,
+    digits: number,
+    isPct: boolean
+  ): string => {
+    if (!card || !card.sparkline?.length) {
+      return isPct ? "~ +0.0%" : "~ +0.0";
+    }
+    const arr = card.sparkline.filter((v) => Number.isFinite(v));
+    if (arr.length < 2) {
+      return isPct ? "~ +0.0%" : "~ +0.0";
+    }
+    const diff = arr[arr.length - 1] - arr[arr.length - 2];
+    const sign = diff >= 0 ? "+" : "";
+    const fixed = diff.toFixed(digits);
+    return isPct ? `~ ${sign}${fixed}%` : `~ ${sign}${fixed}`;
+  };
+
+  // Cards for the four KPIs we care about
+  const kVacc = getCard("vaccination_any_pct");
+  const kCases = getCard("cases_per_100k");
+  const kDeaths = getCard("deaths_per_100k");
+  const kHes = getCard("hesitancy_pct");
+
+  const weekLabelRaw = nat?.[natIdx]?.week ?? `2024-Week ${clampedWeek}`;
+  const weekLabelFormatted = weekLabelRaw.replace("2024-W", "2024-Week ");
 
   // PERF TIDY: memoize smoothed series and reuse in chart
   const smoothedSeries = useMemo(() => {
     if (smoothing === "off") return series;
-    const ca = movingAvg(series.map(q => q.cases_per_100k), 7);
-    const de = movingAvg(series.map(q => q.deaths_per_100k), 7);
+    const ca = movingAvg(series.map((q) => q.cases_per_100k), 7);
+    const de = movingAvg(series.map((q) => q.deaths_per_100k), 7);
     return series.map((p, i) => ({
       ...p,
       cases_per_100k: round(ca[i], 1),
@@ -173,14 +212,14 @@ export default function StateProfile() {
         <div className="flex gap-6">
           {/* Filter rail (sticky) */}
           <aside className="card sticky top-24 h-fit w-[300px] p-4">
-            {/* NEW: align with Overview */}
+            {/* align with Overview */}
             <h2 className="text-sm font-semibold text-slate-700">Filters</h2>
 
             <h3 className="mt-4 text-sm font-semibold text-slate-700">State</h3>
             <div className="mt-2">
               <select
                 value={selectedState}
-                onChange={(e) => setSelectedState(e.target.value)}
+                onChange={(e) => setSelectedState(e.target.value as State50)}
                 className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-0 focus:border-slate-400"
               >
                 {US_STATES_50.map((s) => (
@@ -286,7 +325,7 @@ export default function StateProfile() {
 
           {/* Right pane */}
           <div className="flex-1 space-y-6">
-            {/* KPI ribbon — now matched to Overview type/spacing */}
+            {/* KPI ribbon — now backed by real data but same look/feel */}
             <section className="card p-5">
               <div className="flex items-start justify-between">
                 <div>
@@ -294,7 +333,7 @@ export default function StateProfile() {
                     {selectedState}
                   </h2>
                   <p className="mt-1 text-slate-500 text-lg">
-                    Data reflects {toWeekLabel(kpi.weekIndex)} 2024
+                    Data reflects {toWeekLabel(week)} 2024
                   </p>
                 </div>
                 <p className="text-slate-500 text-lg">
@@ -305,35 +344,51 @@ export default function StateProfile() {
               <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <KpiCard
                   label="Vaccination (Any Dose) %"
-                  value={`${kpi.vaccination_any_pct.toFixed(1)}%`}
-                  delta={`~ ${delta(kpi.vaccination_any_pct, prev?.vaccination_any_pct, 1)}%`}
-                  spark={sparkVacc}
+                  value={
+                    kVacc && Number.isFinite(kVacc.value)
+                      ? `${kVacc.value.toFixed(1)}%`
+                      : "—"
+                  }
+                  delta={formatDeltaFromCard(kVacc, 1, true)}
+                  spark={kVacc?.sparkline ?? []}
                   colorClass="text-indigo-400"
-                  hint={`Week ending 2024-Week ${kpi.weekIndex}`}
+                  hint={`Week ending ${weekLabelFormatted}`}
                 />
                 <KpiCard
                   label="Cases / 100k (weekly)"
-                  value={kpi.cases_per_100k.toFixed(1)}
+                  value={
+                    kCases && Number.isFinite(kCases.value)
+                      ? kCases.value.toFixed(1)
+                      : "0.0"
+                  }
                   suffix="/100k"
-                  delta={`~ ${delta(kpi.cases_per_100k, prev?.cases_per_100k, 1)}`}
-                  spark={sparkCases}
+                  delta={formatDeltaFromCard(kCases, 1, false)}
+                  spark={kCases?.sparkline ?? []}
                   colorClass="text-orange-400"
-                  hint={`Week ending 2024-Week ${kpi.weekIndex}`}
+                  hint={`Week ending ${weekLabelFormatted}`}
                 />
                 <KpiCard
                   label="Deaths / 100k (weekly)"
-                  value={kpi.deaths_per_100k.toFixed(1)}
+                  value={
+                    kDeaths && Number.isFinite(kDeaths.value)
+                      ? kDeaths.value.toFixed(1)
+                      : "0.0"
+                  }
                   suffix="/100k"
-                  delta={`~ ${delta(kpi.deaths_per_100k, prev?.deaths_per_100k, 2)}`}
-                  spark={sparkDeaths}
+                  delta={formatDeltaFromCard(kDeaths, 2, false)}
+                  spark={kDeaths?.sparkline ?? []}
                   colorClass="text-rose-400"
-                  hint={`Week ending 2024-Week ${kpi.weekIndex}`}
+                  hint={`Week ending ${weekLabelFormatted}`}
                 />
                 <KpiCard
                   label="Hesitancy % (CDC est.)"
-                  value={`${kpi.hesitancy_pct.toFixed(1)}%`}
-                  delta={`~ ${delta(kpi.hesitancy_pct, prev?.hesitancy_pct, 1)}%`}
-                  spark={sparkHes}
+                  value={
+                    kHes && Number.isFinite(kHes.value)
+                      ? `${kHes.value.toFixed(1)}%`
+                      : "—"
+                  }
+                  delta={formatDeltaFromCard(kHes, 1, true)}
+                  spark={kHes?.sparkline ?? []}
                   colorClass="text-violet-400"
                   hint="Latest estimate"
                 />
@@ -359,9 +414,32 @@ export default function StateProfile() {
                     />
                     <Tooltip />
                     <Legend />
-                    <Line type="monotone" dataKey="vaccination_any_pct" name="Any dose" stroke="#3b82f6" dot={false} strokeWidth={3} />
-                    <Line type="monotone" dataKey="vaccination_booster_pct" name="Booster" stroke="#60a5fa" dot={false} strokeDasharray="5 5" strokeWidth={2} />
-                    <Line type="monotone" dataKey="vaccination_primary_pct" name="Primary complete" stroke="#2563eb" dot={false} strokeDasharray="2 6" strokeWidth={2} />
+                    <Line
+                      type="monotone"
+                      dataKey="vaccination_any_pct"
+                      name="Any dose"
+                      stroke="#3b82f6"
+                      dot={false}
+                      strokeWidth={3}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="vaccination_booster_pct"
+                      name="Booster"
+                      stroke="#60a5fa"
+                      dot={false}
+                      strokeDasharray="5 5"
+                      strokeWidth={2}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="vaccination_primary_pct"
+                      name="Primary complete"
+                      stroke="#2563eb"
+                      dot={false}
+                      strokeDasharray="2 6"
+                      strokeWidth={2}
+                    />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -372,8 +450,26 @@ export default function StateProfile() {
               <div className="flex items-center justify-between">
                 <h3 className="text-xl font-semibold text-slate-900">Cases &amp; Deaths</h3>
                 <div className="flex items-center gap-2 text-sm">
-                  <span className={cn("rounded-full px-3 py-1", smoothing === "off" ? "bg-slate-200 text-slate-700" : "bg-slate-100 text-slate-500")}>Off</span>
-                  <span className={cn("rounded-full px-3 py-1", smoothing === "ma" ? "bg-slate-200 text-slate-700" : "bg-slate-100 text-slate-500")}>7-day MA</span>
+                  <span
+                    className={cn(
+                      "rounded-full px-3 py-1",
+                      smoothing === "off"
+                        ? "bg-slate-200 text-slate-700"
+                        : "bg-slate-100 text-slate-500"
+                    )}
+                  >
+                    Off
+                  </span>
+                  <span
+                    className={cn(
+                      "rounded-full px-3 py-1",
+                      smoothing === "ma"
+                        ? "bg-slate-200 text-slate-700"
+                        : "bg-slate-100 text-slate-500"
+                    )}
+                  >
+                    7-day MA
+                  </span>
                 </div>
               </div>
               <p className="text-sm text-slate-500">
@@ -384,12 +480,33 @@ export default function StateProfile() {
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={smoothedSeries}>
                     <CartesianGrid stroke="#e5e7eb" strokeDasharray="4 4" />
-                    <XAxis dataKey="weekLabel" tick={{ fontSize: 11 }} label={{ value: "Week", position: "insideBottom", offset: -4 }} />
-                    <YAxis tick={{ fontSize: 11 }} label={<InsideLeftYAxisLabel value="Per 100k (weekly)" />} />
+                    <XAxis
+                      dataKey="weekLabel"
+                      tick={{ fontSize: 11 }}
+                      label={{ value: "Week", position: "insideBottom", offset: -4 }}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 11 }}
+                      label={<InsideLeftYAxisLabel value="Per 100k (weekly)" />}
+                    />
                     <Tooltip />
                     <Legend />
-                    <Line type="monotone" dataKey="cases_per_100k" name="Cases/100k" stroke="#f97316" dot={false} strokeWidth={3} />
-                    <Line type="monotone" dataKey="deaths_per_100k" name="Deaths/100k" stroke="#7c3aed" dot={false} strokeWidth={3} />
+                    <Line
+                      type="monotone"
+                      dataKey="cases_per_100k"
+                      name="Cases/100k"
+                      stroke="#f97316"
+                      dot={false}
+                      strokeWidth={3}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="deaths_per_100k"
+                      name="Deaths/100k"
+                      stroke="#7c3aed"
+                      dot={false}
+                      strokeWidth={3}
+                    />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -399,15 +516,41 @@ export default function StateProfile() {
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
               <section className="card p-5">
                 <h3 className="text-xl font-semibold text-slate-900">Hesitancy vs Coverage</h3>
-                <p className="text-sm text-slate-500">Descriptive only; correlation ≠ causation</p>
+                <p className="text-sm text-slate-500">
+                  Descriptive only; correlation ≠ causation
+                </p>
                 <div className="mt-4 h-[300px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <ScatterChart>
                       <CartesianGrid stroke="#e5e7eb" strokeDasharray="4 4" />
-                      <XAxis type="number" dataKey="x" name="Vaccination %" domain={[0, 100]} tick={{ fontSize: 11 }} label={{ value: "Vaccination %", position: "insideBottom", offset: -4 }} />
-                      <YAxis type="number" dataKey="y" name="Hesitancy %" domain={[0, 100]} tick={{ fontSize: 11 }} label={<InsideLeftYAxisLabel value="Hesitancy %" />} />
+                      <XAxis
+                        type="number"
+                        dataKey="x"
+                        name="Vaccination %"
+                        domain={[0, 100]}
+                        tick={{ fontSize: 11 }}
+                        label={{
+                          value: "Vaccination %",
+                          position: "insideBottom",
+                          offset: -4,
+                        }}
+                      />
+                      <YAxis
+                        type="number"
+                        dataKey="y"
+                        name="Hesitancy %"
+                        domain={[0, 100]}
+                        tick={{ fontSize: 11 }}
+                        label={<InsideLeftYAxisLabel value="Hesitancy %" />}
+                      />
                       <Tooltip cursor={{ strokeDasharray: "3 3" }} />
-                      <Scatter data={series.map(p => ({ x: p.vaccination_any_pct, y: p.hesitancy_pct }))} fill="#7c3aed" />
+                      <Scatter
+                        data={series.map((p) => ({
+                          x: p.vaccination_any_pct,
+                          y: p.hesitancy_pct,
+                        }))}
+                        fill="#7c3aed"
+                      />
                     </ScatterChart>
                   </ResponsiveContainer>
                 </div>
@@ -415,22 +558,51 @@ export default function StateProfile() {
 
               <section className="card p-5">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-xl font-semibold text-slate-900">Lagged Outcome Exploration</h3>
-                  <div className="text-sm text-slate-600">Lag: <span className="font-medium">{lag}</span> weeks</div>
+                  <h3 className="text-xl font-semibold text-slate-900">
+                    Lagged Outcome Exploration
+                  </h3>
+                  <div className="text-sm text-slate-600">
+                    Lag: <span className="font-medium">{lag}</span> weeks
+                  </div>
                 </div>
-                <p className="text-sm text-slate-500">Explore relationship between vaccination and outcomes over time</p>
+                <p className="text-sm text-slate-500">
+                  Explore relationship between vaccination and outcomes over time
+                </p>
 
                 <div className="mt-4 h-[300px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <ScatterChart>
                       <CartesianGrid stroke="#e5e7eb" strokeDasharray="4 4" />
-                      <XAxis type="number" dataKey="x" name="Vaccination %" domain={[0, 100]} tick={{ fontSize: 11 }} label={{ value: "Vaccination %", position: "insideBottom", offset: -4 }} />
+                      <XAxis
+                        type="number"
+                        dataKey="x"
+                        name="Vaccination %"
+                        domain={[0, 100]}
+                        tick={{ fontSize: 11 }}
+                        label={{
+                          value: "Vaccination %",
+                          position: "insideBottom",
+                          offset: -4,
+                        }}
+                      />
                       <YAxis
                         type="number"
                         dataKey="y"
-                        name={outcome === "cases" ? "Cases/100k (lagged)" : "Deaths/100k (lagged ×1000)"}
+                        name={
+                          outcome === "cases"
+                            ? "Cases/100k (lagged)"
+                            : "Deaths/100k (lagged ×1000)"
+                        }
                         tick={{ fontSize: 11 }}
-                        label={<InsideLeftYAxisLabel value={outcome === "cases" ? "Cases/100k (lagged)" : "Deaths/100k (lagged ×1000)"} />}
+                        label={
+                          <InsideLeftYAxisLabel
+                            value={
+                              outcome === "cases"
+                                ? "Cases/100k (lagged)"
+                                : "Deaths/100k (lagged ×1000)"
+                            }
+                          />
+                        }
                       />
                       <Tooltip cursor={{ strokeDasharray: "3 3" }} />
                       <Scatter
@@ -441,7 +613,10 @@ export default function StateProfile() {
                             if (j >= series.length) break;
                             out.push({
                               x: series[i].vaccination_any_pct,
-                              y: outcome === "cases" ? series[j].cases_per_100k : series[j].deaths_per_100k * 1000,
+                              y:
+                                outcome === "cases"
+                                  ? series[j].cases_per_100k
+                                  : series[j].deaths_per_100k * 1000,
                             });
                           }
                           return out;
@@ -487,20 +662,30 @@ function KpiCard({
 }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-4 min-h-[168px]">
-      <div className="text-[12px] font-medium leading-snug text-slate-600">{label}</div>
+      <div className="text-[12px] font-medium leading-snug text-slate-600">
+        {label}
+      </div>
 
       <div className="mt-1 flex items-center gap-2">
         <div className="text-[26px] font-semibold tracking-tight text-slate-900">
           {value}
-          {suffix && <span className="ml-1 text-[14px] text-slate-500">{suffix}</span>}
+          {suffix && (
+            <span className="ml-1 text-[14px] text-slate-500">{suffix}</span>
+          )}
         </div>
         <span className="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-medium text-emerald-700">
-          <span className="mr-1">~</span>{delta.replace("~ ", "")}
+          <span className="mr-1">~</span>
+          {delta.replace("~ ", "")}
         </span>
       </div>
 
       <div className="mt-2">
-        <Sparkline values={spark} colorClassName={colorClass} width={168} height={44} />
+        <Sparkline
+          values={spark}
+          colorClassName={colorClass}
+          width={168}
+          height={44}
+        />
       </div>
 
       <div className="mt-1 text-[11px] text-slate-500">

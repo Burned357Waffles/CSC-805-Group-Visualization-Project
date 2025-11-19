@@ -3,7 +3,7 @@ import * as d3 from "d3";
 import { feature } from "topojson-client";
 import { useAppStore } from "../store/useAppStore";
 import type { OutcomeKey, StateLatest } from "../lib/types";
-import { MOCK_STATE_LATEST } from "../lib/mock";
+import { useStateLatest } from "../lib/data";
 
 type AnyTopo = any;
 
@@ -23,10 +23,6 @@ const OUTCOME_LABEL: Record<OutcomeKey, string> = {
   deaths_per_100k: "Deaths / 100k",
 };
 
-const byFips = new Map<string, StateLatest>(
-  MOCK_STATE_LATEST.map((d) => [d.fips, d])
-);
-
 export default function UsChoropleth({
   outcome,
   width = 1000,
@@ -34,7 +30,13 @@ export default function UsChoropleth({
 }: Props) {
   const selectedState = useAppStore((s) => s.state);
   const setStateSel = useAppStore((s) => s.setState);
-  const rangeEnd = useAppStore((s) => s.rangeEnd); // right edge = “current” week
+  const week = useAppStore((s) => s.week);
+
+  const { data: latest } = useStateLatest(String(week));
+  const byFips = useMemo(
+    () => new Map<string, StateLatest>((latest ?? []).map((d) => [d.fips, d])),
+    [latest]
+  );
 
   const [topo, setTopo] = useState<AnyTopo | null>(null);
 
@@ -73,24 +75,17 @@ export default function UsChoropleth({
     return st.features as any[];
   }, [topo]);
 
-  // domain from mock snapshot (replace with weekly domain when dataset arrives)
   const color = useMemo(() => {
-    const vals = MOCK_STATE_LATEST.map((d) => d[outcome]).filter(
-      (v) => typeof v === "number" && Number.isFinite(v)
-    ) as number[];
-    const [min, max] = d3.extent(vals) as [number, number];
+    const vals = (latest ?? [])
+      .map((d) => d[outcome])
+      .filter((v) => typeof v === "number" && Number.isFinite(v)) as number[];
+    const [min, max] = (d3.extent(vals) as [number | undefined, number | undefined]) ?? [];
     return d3
       .scaleSequential(
         outcome === "cases_per_100k" ? d3.interpolateBlues : d3.interpolateOranges
       )
       .domain([min ?? 0, max ?? 1]);
-  }, [outcome]);
-
-  // National baseline (for delta in tooltip)
-  const nationalAvg = useMemo(() => {
-    const arr = MOCK_STATE_LATEST.map((d) => d[outcome]).filter((x) => Number.isFinite(x)) as number[];
-    return arr.length ? d3.mean(arr)! : NaN;
-  }, [outcome]);
+  }, [outcome, latest]);
 
   const viewTransform = useMemo(() => {
     if (!states.length) return { k: 1, tx: 0, ty: 0 };
@@ -172,31 +167,28 @@ export default function UsChoropleth({
       const vacc = datum?.vaccination_any_pct;
       const val = datum ? (datum as any)[outcome] : undefined;
 
-      const delta = Number.isFinite(nationalAvg) && Number.isFinite(val as number)
-        ? (val as number) - nationalAvg
-        : NaN;
-
       const html = [
         `<div class="text-slate-900 font-semibold">${name}</div>`,
-        `<div class="text-slate-600">Week ending: <span class="font-medium">W${String(rangeEnd).padStart(2,"0")}</span></div>`,
-        `<div class="text-slate-600">Vaccination: <span class="font-medium">${numberFmt(Number(vacc ?? NaN),1)}%</span></div>`,
-        `<div class="text-slate-600">${OUTCOME_LABEL[outcome]}: <span class="font-medium">${numberFmt(Number(val ?? NaN), outcome === "deaths_per_100k" ? 2 : 1)}</span>`,
-        Number.isFinite(delta)
-          ? `<span class="text-slate-500 ml-1">(${delta >= 0 ? "+" : ""}${numberFmt(delta, outcome === "deaths_per_100k" ? 2 : 1)} vs US)</span>`
-          : ``,
-        `</div>`,
+        `<div class="text-slate-600">Vaccination: <span class="font-medium">${numberFmt(
+          Number(vacc ?? NaN),
+          1
+        )}%</span></div>`,
+        `<div class="text-slate-600">${OUTCOME_LABEL[outcome]}: <span class="font-medium">${numberFmt(
+          Number(val ?? NaN),
+          1
+        )}</span></div>`,
       ].join("");
 
       const [mx, my] = d3.pointer(ev, svgRef.current);
       const pad = 14;
-      const w = 240;
-      const h = 76;
+      const w = 220;
+      const h = 64;
       const x = Math.min(Math.max(mx + 12, pad), width - w - pad);
       const y = Math.min(Math.max(my + 12, pad), height - h - pad);
 
       setTt({ show: true, x, y, html });
     }
-  }, [states, outcome, color, path, viewTransform, width, height, selectedState, setStateSel, nationalAvg, rangeEnd]);
+  }, [states, outcome, color, path, viewTransform, width, height, selectedState, setStateSel, byFips]);
 
   // Keyboard: Esc to reset
   const onKeyDown = (e: React.KeyboardEvent<SVGSVGElement>) => {
@@ -230,10 +222,17 @@ export default function UsChoropleth({
         onKeyDown={onKeyDown}
         onDoubleClick={() => setStateSel("All states")}
       >
-        {/* Click-to-reset background */}
-        <rect x={0} y={0} width={width} height={height} fill="transparent" onClick={() => setStateSel("All states")} />
+        {/* Transparent background layer for easy click-to-reset */}
+        <rect
+          x={0}
+          y={0}
+          width={width}
+          height={height}
+          fill="transparent"
+          onClick={() => setStateSel("All states")}
+        />
 
-        {/* Legend (continuous bar with min/max labels) */}
+        {/* Legend */}
         <g transform={`translate(${width - 260}, 16)`}>
           <defs>
             <linearGradient id="lg" x1="0" x2="1" y1="0" y2="0">
@@ -248,8 +247,12 @@ export default function UsChoropleth({
           </defs>
           <rect width={180} height={10} fill="url(#lg)" rx={5} />
           <g fontSize={11} fill="#475569">
-            <text x={0} y={22}>{numberFmt(color.domain()[0], outcome === "deaths_per_100k" ? 2 : 0)}</text>
-            <text x={180} y={22} textAnchor="end">{numberFmt(color.domain()[1], outcome === "deaths_per_100k" ? 2 : 0)}</text>
+            <text x={0} y={22}>
+              {numberFmt(color.domain()[0], outcome === "deaths_per_100k" ? 2 : 0)}
+            </text>
+            <text x={180} y={22} textAnchor="end">
+              {numberFmt(color.domain()[1], outcome === "deaths_per_100k" ? 2 : 0)}
+            </text>
           </g>
         </g>
 
@@ -261,7 +264,7 @@ export default function UsChoropleth({
       {tt.show && (
         <div
           className="pointer-events-none absolute z-10 rounded-lg bg-white/95 px-3 py-2 shadow-lg ring-1 ring-slate-200"
-          style={{ left: tt.x, top: tt.y, width: 240 }}
+          style={{ left: tt.x, top: tt.y, width: 220 }}
           dangerouslySetInnerHTML={{ __html: tt.html }}
         />
       )}

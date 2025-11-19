@@ -1,4 +1,3 @@
-// (same as your last version; included verbatim for completeness)
 import { useEffect, useMemo, useState } from "react";
 import {
   LineChart,
@@ -15,9 +14,12 @@ import {
   ReferenceDot,         // ← added
 } from "recharts";
 import { MOCK_NATIONAL_TIMELINE } from "./lib/mock";
-import { US_STATES_50 } from "./lib/usStates";
+import { US_STATES_50, STATE_NAME_TO_USPS } from "./lib/usStates";
+import type { State50 } from "./lib/usStates";
 import { cn } from "./lib/utils";
 import KpiCard from "./components/KpiCard";
+import { useMultiKpis, useNationalTimeline } from "./lib/data";
+import type { KpiCard as KpiDatum } from "./lib/types";
 
 /* ------------------------------------------------------------------ */
 /* Helpers – generate per-state weekly series from the national mock  */
@@ -155,11 +157,33 @@ function InsideLeftYAxisLabel({
 }
 
 /* ------------------------------------------------------------------ */
+/* Small helper for KPI delta formatting                               */
+/* ------------------------------------------------------------------ */
+
+function deltaFromCard(
+  card: KpiDatum | undefined,
+  digits: number,
+  isPct: boolean
+): string {
+  if (!card || !card.sparkline?.length) {
+    return isPct ? "~ +0.0%" : "~ +0.0";
+  }
+  const arr = card.sparkline.filter((v) => Number.isFinite(v));
+  if (arr.length < 2) {
+    return isPct ? "~ +0.0%" : "~ +0.0";
+  }
+  const diff = arr[arr.length - 1] - arr[arr.length - 2];
+  const sign = diff >= 0 ? "+" : "";
+  const fixed = diff.toFixed(digits);
+  return isPct ? `~ ${sign}${fixed}%` : `~ ${sign}${fixed}`;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main component                                                      */
 /* ------------------------------------------------------------------ */
 
 export default function CompareStates() {
-  const [chosen, setChosen] = useState<string[]>(["California", "Texas"]);
+  const [chosen, setChosen] = useState<State50[]>(["California", "Texas"]);
   const [picker, setPicker] = useState<string>("");
   const [outcome, setOutcome] = useState<"cases" | "deaths">("cases");
   const [lag, setLag] = useState<number>(4);
@@ -201,13 +225,15 @@ export default function CompareStates() {
 
   const addState = (name: string) => {
     if (!name) return;
-    if (chosen.includes(name)) return;
+    // ensure it's one of the 50 valid state names
+    if (!US_STATES_50.includes(name as State50)) return;
+    if (chosen.includes(name as State50)) return;
     if (chosen.length >= 10) return;
-    setChosen([...chosen, name]);
+    setChosen([...chosen, name as State50]);
     setPicker("");
   };
 
-  // series for each chosen state
+  // series for each chosen state (synthetic, for charts only)
   const seriesByState = useMemo(() => {
     const m = new Map<string, SeriesPoint[]>();
     chosen.forEach((s) => m.set(s, genStateSeries(s)));
@@ -236,31 +262,30 @@ export default function CompareStates() {
     return m;
   }, [seriesByState, range.start, range.end]);
 
-  // KPI strip data (PATCH: use animEnd)
-  const kpiStrip = useMemo(() => {
-    const endW = Math.max(1, Math.min(52, animEnd)) - 1;
-    const prevW = Math.max(0, endW - 1);
-    return chosen.map((s) => {
-      const full = seriesByState.get(s)!;
-      const cur = full[endW];
-      const prev = full[prevW];
-      return {
-        state: s,
-        color: stateColor(s),
-        vac: cur.vaccination_any_pct,
-        vacDelta: cur.vaccination_any_pct - prev.vaccination_any_pct,
-        cases: cur.cases_per_100k,
-        casesDelta: cur.cases_per_100k - prev.cases_per_100k,
-        deaths: cur.deaths_per_100k,
-        deathsDelta: cur.deaths_per_100k - prev.deaths_per_100k,
-        hes: cur.hesitancy_pct,
-        hesDelta: cur.hesitancy_pct - prev.hesitancy_pct,
-        tail: full.slice(Math.max(0, endW - 11), endW + 1),
-      };
-    });
-  }, [chosen, seriesByState, animEnd]);
+  /* ------------ Real KPI data: national weeks + per-state KPIs ----- */
 
-  // bubble data (PATCH: use animEnd)
+  // national timeline to map "week number" → ISO date
+  const { data: nat } = useNationalTimeline();
+
+  const weekIso = useMemo(() => {
+    if (!nat?.length) return "";
+    const idx = Math.max(0, Math.min(animEnd - 1, nat.length - 1));
+    return nat[idx]?.week ?? "";
+  }, [nat, animEnd]);
+
+  const weekHint = weekIso ? `Week ending ${weekIso}` : undefined;
+
+  const stateUspsList = useMemo(
+    () =>
+      chosen
+        .map((name: State50) => STATE_NAME_TO_USPS[name])
+        .filter((c): c is string => Boolean(c)),
+    [chosen]
+  );
+
+  const { byState, loading: kpiLoading } = useMultiKpis(weekIso, stateUspsList);
+
+  // bubble data (PATCH: use animEnd, still driven by synthetic series)
   const bubbleData = useMemo(() => {
     const points: {
       state: string;
@@ -493,63 +518,94 @@ export default function CompareStates() {
               </div>
             ) : (
               <>
-                {/* KPI strip */}
+                {/* KPI strip – now backed by real CSV KPIs */}
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  {kpiStrip.map((k) => (
-                    <div
-                      key={k.state}
-                      className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
-                    >
-                      <div className="mb-3 text-base font-semibold text-slate-800">
-                        {k.state}
+                  {chosen.map((stateName) => {
+                    const usps = STATE_NAME_TO_USPS[stateName];
+                    const cards = usps && byState ? byState[usps] : undefined;
+
+                    const kVacc = cards?.find((c) => c.key === "vaccination_any_pct");
+                    const kCases = cards?.find((c) => c.key === "cases_per_100k");
+                    const kDeaths = cards?.find((c) => c.key === "deaths_per_100k");
+                    const kHes = cards?.find((c) => c.key === "hesitancy_pct");
+
+                    const loadingState = kpiLoading && (!cards || !cards.length);
+
+                    return (
+                      <div
+                        key={stateName}
+                        className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+                      >
+                        <div className="mb-3 text-base font-semibold text-slate-800">
+                          {stateName}
+                        </div>
+
+                        {loadingState ? (
+                          <div className="text-sm text-slate-500">Loading…</div>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-3">
+                            <KpiCard
+                              size="micro"
+                              label="Vaccination (Any Dose) %"
+                              value={
+                                kVacc && Number.isFinite(kVacc.value)
+                                  ? `${kVacc.value.toFixed(1)}%`
+                                  : "—"
+                              }
+                              delta={deltaFromCard(kVacc, 1, true)}
+                              spark={kVacc?.sparkline ?? []}
+                              colorClass="text-indigo-400"
+                              hint={weekHint}
+                            />
+
+                            <KpiCard
+                              size="micro"
+                              label="Cases / 100k (weekly)"
+                              value={
+                                kCases && Number.isFinite(kCases.value)
+                                  ? kCases.value.toFixed(1)
+                                  : "0.0"
+                              }
+                              suffix="/100k"
+                              delta={deltaFromCard(kCases, 1, false)}
+                              spark={kCases?.sparkline ?? []}
+                              colorClass="text-orange-400"
+                              hint={weekHint}
+                            />
+
+                            <KpiCard
+                              size="micro"
+                              label="Deaths / 100k (weekly)"
+                              value={
+                                kDeaths && Number.isFinite(kDeaths.value)
+                                  ? kDeaths.value.toFixed(2)
+                                  : "0.00"
+                              }
+                              suffix="/100k"
+                              delta={deltaFromCard(kDeaths, 2, false)}
+                              spark={kDeaths?.sparkline ?? []}
+                              colorClass="text-rose-400"
+                              hint={weekHint}
+                            />
+
+                            <KpiCard
+                              size="micro"
+                              label="Hesitancy % (CDC est.)"
+                              value={
+                                kHes && Number.isFinite(kHes.value)
+                                  ? `${kHes.value.toFixed(1)}%`
+                                  : "—"
+                              }
+                              delta={deltaFromCard(kHes, 1, true)}
+                              spark={kHes?.sparkline ?? []}
+                              colorClass="text-violet-400"
+                              hint="Latest estimate"
+                            />
+                          </div>
+                        )}
                       </div>
-
-                      {/* 2×2 compact KPI grid */}
-                      <div className="grid grid-cols-2 gap-3">
-                        <KpiCard
-                          size="micro"
-                          label="Vaccination (Any Dose) %"
-                          value={`${k.vac.toFixed(1)}%`}
-                          delta={`~ ${k.vacDelta.toFixed(1)}%`}
-                          spark={k.tail.map((p) => p.vaccination_any_pct)}
-                          colorClass="text-indigo-400"
-                          hint={`Week ending W${String(animEnd).padStart(2, "0")}`}
-                        />
-
-                        <KpiCard
-                          size="micro"
-                          label="Cases / 100k (weekly)"
-                          value={k.cases.toFixed(1)}
-                          suffix="/100k"
-                          delta={`~ ${k.casesDelta.toFixed(1)}`}
-                          spark={k.tail.map((p) => p.cases_per_100k)}
-                          colorClass="text-orange-400"
-                          hint={`Week ending W${String(animEnd).padStart(2, "0")}`}
-                        />
-
-                        <KpiCard
-                          size="micro"
-                          label="Deaths / 100k (weekly)"
-                          value={k.deaths.toFixed(1)}
-                          suffix="/100k"
-                          delta={`~ ${k.deathsDelta.toFixed(2)}`}
-                          spark={k.tail.map((p) => p.deaths_per_100k)}
-                          colorClass="text-rose-400"
-                          hint={`Week ending W${String(animEnd).padStart(2, "0")}`}
-                        />
-
-                        <KpiCard
-                          size="micro"
-                          label="Hesitancy % (CDC est.)"
-                          value={`${k.hes.toFixed(1)}%`}
-                          delta={`~ ${k.hesDelta.toFixed(1)}%`}
-                          spark={k.tail.map((p) => p.hesitancy_pct)}
-                          colorClass="text-violet-400"
-                          hint="Latest estimate"
-                        />
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 {/* (charts unchanged) */}
@@ -847,7 +903,7 @@ export default function CompareStates() {
                             data={[pt]}
                             fill={pt.color}
                             // shape-driven radius: 6..24 px by hesitancy %
-                            shape={(props) => {
+                            shape={(props: any) => {
                               const r = Math.max(6, Math.min(24, 6 + (pt.z / 100) * 18));
                               const { cx, cy, fill } = props as any;
                               return <circle cx={cx} cy={cy} r={r} fill={fill} opacity={0.9} />;

@@ -1,485 +1,544 @@
-# etl.py
-# Denormalize to a single state × week fact table + national series + cleaned event markers
+#!/usr/bin/env python
+"""
+Clean COVID dashboard data and produce:
+
+  public/data/state_week.csv  (state-level, 50 states × 126 weeks)
+  public/data/nat_week.csv    (national aggregate, 1 row per week)
+
+Inputs (from CSV_DIR):
+
+  - COVID-19 Cases & Deaths by State.csv
+  - COVID-19_Vaccinations by State.csv
+  - co-est2024-alldata.csv
+  - Vaccine Hesitancy for COVID-19.csv
+"""
 
 import os
-import sys
-import warnings
-import pandas as pd
+from pathlib import Path
+
 import numpy as np
-from datetime import datetime
-from dateutil import parser as dateparser
+import pandas as pd
 
-# Suppress FutureWarning about DataFrame concat (deprecation notice, functionality still works)
-warnings.filterwarnings('ignore', category=FutureWarning, message='.*DataFrame concatenation.*')
+# -------------------------------------------------------------------
+# Paths and constants
+# -------------------------------------------------------------------
 
-# =========================
-# EDIT THESE PATHS FIRST
-# =========================
-CSV_DIR = "original_data"  # e.g., "/Users/Teammate/Desktop/Project/CSV"
-OUTPUT_DIR = "data"  # e.g., "/Users/Teammate/Desktop/Project/ETL_OUT"
+CSV_DIR = os.environ.get("CSV_DIR", "CSV")
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "public/data")
 
 PATH_CASES = os.path.join(CSV_DIR, "COVID-19 Cases & Deaths by State.csv")
 PATH_VAX   = os.path.join(CSV_DIR, "COVID-19_Vaccinations by State.csv")
 PATH_HES   = os.path.join(CSV_DIR, "Vaccine Hesitancy for COVID-19.csv")
-PATH_POP   = os.path.join(CSV_DIR, "per 100k normalization.csv")
-PATH_EVENTS= os.path.join(CSV_DIR, "COVID19_Vaccine_Event_Markers.csv")
+PATH_POP   = os.path.join(CSV_DIR, "co-est2024-alldata.csv")
 
-OUT_FACT   = os.path.join(OUTPUT_DIR, "state_week_fact.csv")
-OUT_NAT    = os.path.join(OUTPUT_DIR, "national_week_timeseries.csv")
-OUT_EVENTS = os.path.join(OUTPUT_DIR, "vaccine_event_markers_clean.csv")
+START_DATE = pd.Timestamp("2020-12-16")  # first Wednesday
+END_DATE   = pd.Timestamp("2023-05-10")  # last Wednesday
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-# =========================
-# Helpers
-# =========================
-
-# USPS ↔ FIPS mapping (50 states + DC)
-STATE_TO_FIPS = {
-    'AL': '01','AK': '02','AZ': '04','AR': '05','CA': '06','CO': '08','CT': '09','DE': '10','DC': '11',
-    'FL': '12','GA': '13','HI': '15','ID': '16','IL': '17','IN': '18','IA': '19','KS': '20','KY': '21',
-    'LA': '22','ME': '23','MD': '24','MA': '25','MI': '26','MN': '27','MS': '28','MO': '29','MT': '30',
-    'NE': '31','NV': '32','NH': '33','NJ': '34','NM': '35','NY': '36','NC': '37','ND': '38','OH': '39',
-    'OK': '40','OR': '41','PA': '42','RI': '44','SC': '45','SD': '46','TN': '47','TX': '48','UT': '49',
-    'VT': '50','VA': '51','WA': '53','WV': '54','WI': '55','WY': '56'
-}
-FIPS_TO_STATE = {v: k for k, v in STATE_TO_FIPS.items()}
-
-def to_iso_date(x):
-    if pd.isna(x) or str(x).strip() == "":
-        return np.nan
-    # handle already-ISO strings
-    try:
-        dt = dateparser.parse(str(x), dayfirst=False, yearfirst=False)
-        return dt.date().isoformat()
-    except Exception:
-        return np.nan
-
-def clean_numeric(s):
-    """Remove commas/percent signs/spaces; return float"""
-    if pd.isna(s):
-        return np.nan
-    t = str(s).replace(',', '').replace('%', '').strip()
-    if t == '':
-        return np.nan
-    try:
-        return float(t)
-    except Exception:
-        return np.nan
-
-def find_column(df, candidates, required=True, description=""):
-    """
-    Find a column in a DataFrame by trying multiple candidate names (case-insensitive).
-    
-    Args:
-        df: DataFrame to search
-        candidates: List of possible column names (will try case-insensitive matches)
-        required: If True, raise error if not found; if False, return None
-        description: Description for error message
-    
-    Returns:
-        Column name if found, None if not found and not required
-    """
-    # First try exact matches (case-sensitive)
-    for candidate in candidates:
-        if candidate in df.columns:
-            return candidate
-    
-    # Then try case-insensitive matches
-    df_cols_lower = {col.lower(): col for col in df.columns}
-    for candidate in candidates:
-        if candidate.lower() in df_cols_lower:
-            return df_cols_lower[candidate.lower()]
-    
-    # Try with stripped whitespace
-    df_cols_stripped = {col.strip(): col for col in df.columns}
-    for candidate in candidates:
-        if candidate.strip() in df_cols_stripped:
-            return df_cols_stripped[candidate.strip()]
-    
-    if required:
-        error_msg = f"Could not find required column. Tried: {candidates}"
-        if description:
-            error_msg += f" ({description})"
-        error_msg += f"\nAvailable columns: {list(df.columns)}"
-        raise ValueError(error_msg)
-    
-    return None
-
-def left_join_nearest_week(df_left, df_right, on_keys, left_date_col, right_date_col, max_gap_days=3):
-    """
-    Join right onto left on (on_keys + nearest date within ±max_gap_days).
-    Assumes date cols are datetime64[ns]. Returns df_left with matched columns from right (suffixed).
-    """
-    # cartesian within key groups not ideal; we do a smart merge:
-    out = []
-    r = df_right.copy()
-    r = r.set_index(on_keys + [right_date_col]).sort_index()
-
-    for gkeys, grp in df_left.groupby(on_keys, dropna=False):
-        if not isinstance(gkeys, tuple):
-            gkeys = (gkeys,)
-        try:
-            r_sub = r.xs(gkeys, level=on_keys, drop_level=False)
-        except KeyError:
-            # no matching key group
-            r_sub = pd.DataFrame(columns=r.columns)
-
-        if r_sub.empty:
-            # no matches, just append with NaNs
-            out.append(grp.assign(_match_idx=pd.NA))
-            continue
-
-        # For each left row, pick the right row nearest in time within window
-        r_sub = r_sub.reset_index()
-        r_sub = r_sub[[*on_keys, right_date_col] + [c for c in r_sub.columns if c not in on_keys + [right_date_col]]]
-
-        def pick_nearest(ts):
-            deltas = (r_sub[right_date_col] - ts).abs()
-            idx = deltas.idxmin()
-            days = deltas.iloc[idx].days
-            if days <= max_gap_days:
-                return idx
-            return None
-
-        idxs = grp[left_date_col].apply(pick_nearest)
-        joined = grp.copy()
-        joined["_match_idx"] = idxs.values
-        out.append(joined)
-
-    # Filter out empty DataFrames before concat to avoid FutureWarning
-    out_filtered = [df for df in out if not df.empty]
-    if not out_filtered:
-        return df_left.copy()
-    L = pd.concat(out_filtered, ignore_index=True)
-    # Now attach right columns by index
-    r_reset = r.reset_index().reset_index().rename(columns={"index": "_match_idx"})
-    merged = L.merge(r_reset, on="_match_idx", how="left", suffixes=("", "_r"))
-    merged.drop(columns=["_match_idx"], inplace=True)
-    return merged
-
-# =========================
-# 1) Load & clean Population
-# =========================
-# The population CSV has a special structure:
-# Row 1: Headers ("Geographic Area", "April 1, 2020 Estimates Base", "Population Estimate (as of July 1)", ...)
-# Row 2: Year headers (empty, empty, 2020, 2021, 2022, 2023, 2024, ...)
-# Rows 3+: Data with state names in first column and population values in year columns
-pop_raw = pd.read_csv(PATH_POP, header=None, dtype=str)
-
-# Find the Geographic Area column (first column, index 0)
-geo_col_idx = 0
-
-# Find year columns in row 1 (index 1)
-year_row = pop_raw.iloc[1]
-year_col_indices = {}
-for idx, val in enumerate(year_row):
-    val_str = str(val).strip()
-    if val_str.isdigit() and len(val_str) == 4:
-        year_col_indices[val_str] = idx
-
-if not year_col_indices:
-    raise ValueError("Could not find year columns in population CSV")
-
-# Use 2020 as baseline population year (or first available year)
-pop_year = "2020" if "2020" in year_col_indices else list(year_col_indices.keys())[0]
-pop_col_idx = year_col_indices[pop_year]
-
-# Extract data starting from row 2 (index 2)
-pop_data = []
-for idx in range(2, len(pop_raw)):
-    state_name = str(pop_raw.iloc[idx, geo_col_idx]).strip()
-    pop_value = str(pop_raw.iloc[idx, pop_col_idx]).strip()
-    
-    # Skip empty rows or metadata rows
-    if not state_name or state_name == "nan" or state_name.startswith("The Census") or state_name.startswith("Note:") or state_name.startswith("Suggested") or state_name.startswith("Source:") or state_name.startswith("Release"):
-        continue
-    
-    pop_data.append({
-        "state_name": state_name,
-        "population": clean_numeric(pop_value)
-    })
-
-pop = pd.DataFrame(pop_data)
-pop["population"] = pop["population"].astype("Int64")
-
-# Strip dots from state names
-pop["state_name"] = pop["state_name"].str.replace(r"^\.", "", regex=True)
-
-# Map state names to USPS codes
-NAME_TO_USPS = {
-    'Alabama':'AL','Alaska':'AK','Arizona':'AZ','Arkansas':'AR','California':'CA','Colorado':'CO','Connecticut':'CT',
-    'Delaware':'DE','District of Columbia':'DC','Florida':'FL','Georgia':'GA','Hawaii':'HI','Idaho':'ID','Illinois':'IL',
-    'Indiana':'IN','Iowa':'IA','Kansas':'KS','Kentucky':'KY','Louisiana':'LA','Maine':'ME','Maryland':'MD','Massachusetts':'MA',
-    'Michigan':'MI','Minnesota':'MN','Mississippi':'MS','Missouri':'MO','Montana':'MT','Nebraska':'NE','Nevada':'NV',
-    'New Hampshire':'NH','New Jersey':'NJ','New Mexico':'NM','New York':'NY','North Carolina':'NC','North Dakota':'ND',
-    'Ohio':'OH','Oklahoma':'OK','Oregon':'OR','Pennsylvania':'PA','Rhode Island':'RI','South Carolina':'SC','South Dakota':'SD',
-    'Tennessee':'TN','Texas':'TX','Utah':'UT','Vermont':'VT','Virginia':'VA','Washington':'WA','West Virginia':'WV',
-    'Wisconsin':'WI','Wyoming':'WY'
+VALID_STATES = {
+    "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA",
+    "HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
+    "MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
+    "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC",
+    "SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"
 }
 
-pop["state_usps"] = pop["state_name"].map(NAME_TO_USPS)
-
-# Filter out non-state rows (regions, territories, empty rows)
-pop = pop[pop["state_usps"].notna()].copy()
-pop = pop[["state_usps", "population"]].dropna()
-pop["state_fips"] = pop["state_usps"].map(STATE_TO_FIPS)
-
-missing_fips = pop[pop["state_fips"].isna()]
-if not missing_fips.empty:
-    print("WARNING: Population has unknown USPS codes:\n", missing_fips)
-
-# =========================
-# 2) Load & clean Hesitancy (county → state)
-# =========================
-hes = pd.read_csv(PATH_HES, dtype=str).rename(columns=lambda c: c.strip())
-
-# Find state column (could be "State", "state", "State Code", etc.)
-state_col = find_column(hes, ["State", "state", "State Code", "state_code", "USPS", "usps", "Location", "location"], 
-                       description="state identifier")
-hesitant_col = find_column(hes, ["Estimated hesitant", "estimated hesitant", "Estimated_hesitant", "hesitancy", "Hesitancy"],
-                          description="hesitancy percentage")
-
-# Convert state names to USPS codes
-# First, try to see if it's already a USPS code (2 letters)
-state_values = hes[state_col].str.strip().str.upper()
-# Check if values are already USPS codes (2 letters) or full state names
-is_usps = state_values.str.len() == 2
-
-# Map full state names to USPS codes
-NAME_TO_USPS = {
-    'ALABAMA':'AL','ALASKA':'AK','ARIZONA':'AZ','ARKANSAS':'AR','CALIFORNIA':'CA','COLORADO':'CO','CONNECTICUT':'CT',
-    'DELAWARE':'DE','DISTRICT OF COLUMBIA':'DC','FLORIDA':'FL','GEORGIA':'GA','HAWAII':'HI','IDAHO':'ID','ILLINOIS':'IL',
-    'INDIANA':'IN','IOWA':'IA','KANSAS':'KS','KENTUCKY':'KY','LOUISIANA':'LA','MAINE':'ME','MARYLAND':'MD','MASSACHUSETTS':'MA',
-    'MICHIGAN':'MI','MINNESOTA':'MN','MISSISSIPPI':'MS','MISSOURI':'MO','MONTANA':'MT','NEBRASKA':'NE','NEVADA':'NV',
-    'NEW HAMPSHIRE':'NH','NEW JERSEY':'NJ','NEW MEXICO':'NM','NEW YORK':'NY','NORTH CAROLINA':'NC','NORTH DAKOTA':'ND',
-    'OHIO':'OH','OKLAHOMA':'OK','OREGON':'OR','PENNSYLVANIA':'PA','RHODE ISLAND':'RI','SOUTH CAROLINA':'SC','SOUTH DAKOTA':'SD',
-    'TENNESSEE':'TN','TEXAS':'TX','UTAH':'UT','VERMONT':'VT','VIRGINIA':'VA','WASHINGTON':'WA','WEST VIRGINIA':'WV',
-    'WISCONSIN':'WI','WYOMING':'WY'
+STATE_ABBR = {
+    "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR",
+    "California": "CA", "Colorado": "CO", "Connecticut": "CT", "Delaware": "DE",
+    "Florida": "FL", "Georgia": "GA", "Hawaii": "HI", "Idaho": "ID",
+    "Illinois": "IL", "Indiana": "IN", "Iowa": "IA", "Kansas": "KS",
+    "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME", "Maryland": "MD",
+    "Massachusetts": "MA", "Michigan": "MI", "Minnesota": "MN",
+    "Mississippi": "MS", "Missouri": "MO", "Montana": "MT", "Nebraska": "NE",
+    "Nevada": "NV", "New Hampshire": "NH", "New Jersey": "NJ",
+    "New Mexico": "NM", "New York": "NY", "North Carolina": "NC",
+    "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK", "Oregon": "OR",
+    "Pennsylvania": "PA", "Rhode Island": "RI", "South Carolina": "SC",
+    "South Dakota": "SD", "Tennessee": "TN", "Texas": "TX", "Utah": "UT",
+    "Vermont": "VT", "Virginia": "VA", "Washington": "WA",
+    "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY",
+    # Territories and DC intentionally omitted
 }
 
-# Convert to USPS codes
-hes["state_usps"] = state_values.where(is_usps, state_values.map(NAME_TO_USPS))
-hes["Estimated hesitant"] = hes[hesitant_col].apply(clean_numeric)
+# -------------------------------------------------------------------
+# Utility
+# -------------------------------------------------------------------
 
-# Filter out rows where we couldn't map to a USPS code
-hes = hes[hes["state_usps"].notna()].copy()
+def ensure_output_dir():
+    Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 
-hes_state = (
-    hes.groupby("state_usps", as_index=False)["Estimated hesitant"]
-       .mean(numeric_only=True)
-       .rename(columns={"Estimated hesitant": "hesitancy_pct"})
-)
-# attach fips for later
-hes_state["state_fips"] = hes_state["state_usps"].map(STATE_TO_FIPS)
+def wednesday_range():
+    """All Wednesdays between START_DATE and END_DATE (inclusive)."""
+    return pd.date_range(START_DATE, END_DATE, freq="W-WED")
 
-# =========================
-# 3) Load & clean Cases/Deaths (weekly)
-# =========================
-cases = pd.read_csv(PATH_CASES, dtype=str).rename(columns=lambda c: c.strip())
 
-# Find required columns with flexible matching
-state_col = find_column(cases, ["state", "State", "STATE", "state_code", "State Code", "Location", "location"],
-                       description="state identifier")
-end_date_col = find_column(cases, ["end_date", "end date", "End Date", "END_DATE", "week_end_date", "Week End Date"],
-                         description="end date")
-new_cases_col = find_column(cases, ["new_cases", "new cases", "New Cases", "NEW_CASES", "cases", "Cases"],
-                           description="new cases")
-new_deaths_col = find_column(cases, ["new_deaths", "new deaths", "New Deaths", "NEW_DEATHS", "deaths", "Deaths"],
-                            description="new deaths")
+# -------------------------------------------------------------------
+# Population tables
+# -------------------------------------------------------------------
 
-# Normalize
-cases["state_usps"] = cases[state_col].str.strip().str.upper()
-cases["week_end_date"] = cases[end_date_col].apply(to_iso_date)
-cases["new_cases"]  = cases[new_cases_col].apply(clean_numeric).astype("Int64")
-cases["new_deaths"] = cases[new_deaths_col].apply(clean_numeric).astype("Int64")
+def build_state_population_year(pop_file: str) -> pd.DataFrame:
+    """
+    From co-est2024-alldata.csv build:
+      state_population_year[state_usps, year, population]
 
-cases = cases[["state_usps","week_end_date","new_cases","new_deaths"]].dropna(subset=["state_usps","week_end_date"])
+    Uses STNAME/CTYNAME where CTYNAME == STNAME for state rows.
+    """
+    pop = pd.read_csv(
+        pop_file,
+        encoding="latin1",
+        usecols=[
+            "STNAME", "CTYNAME",
+            "POPESTIMATE2020", "POPESTIMATE2021",
+            "POPESTIMATE2022", "POPESTIMATE2023",
+        ],
+    )
 
-# add fips + population + rates
-cases = cases.merge(pop, on="state_usps", how="left")
-cases["state_fips"] = cases["state_usps"].map(STATE_TO_FIPS)
+    # State rows have CTYNAME == STNAME
+    state_rows = pop[pop["CTYNAME"] == pop["STNAME"]].copy()
 
-if cases["population"].isna().any():
-    missing = cases[cases["population"].isna()]["state_usps"].unique().tolist()
-    print("WARNING: Missing population for states:", missing)
+    # Map to USPS, keep only 50 states
+    state_rows["state_usps"] = state_rows["STNAME"].map(STATE_ABBR)
+    state_rows = state_rows[state_rows["state_usps"].isin(VALID_STATES)].copy()
 
-cases["cases_per_100k"]  = (cases["new_cases"].astype(float)  / cases["population"].astype(float)) * 100000
-cases["deaths_per_100k"] = (cases["new_deaths"].astype(float) / cases["population"].astype(float)) * 100000
+    # Melt yearly population
+    melted = state_rows.melt(
+        id_vars=["state_usps"],
+        value_vars=[
+            "POPESTIMATE2020", "POPESTIMATE2021",
+            "POPESTIMATE2022", "POPESTIMATE2023",
+        ],
+        var_name="year_col",
+        value_name="population",
+    )
 
-# Convert date to datetime for later nearest-week join
-cases["week_end_dt"] = pd.to_datetime(cases["week_end_date"], errors="coerce")
+    melted["year"] = melted["year_col"].str.extract(r"(\d{4})").astype(int)
+    melted["population"] = melted["population"].astype(int)
 
-# =========================
-# 4) Load & clean Vaccinations (weekly)
-# =========================
-vax = pd.read_csv(PATH_VAX, dtype=str).rename(columns=lambda c: c.strip())
+    state_population_year = melted[["state_usps", "year", "population"]].copy()
 
-# Find location/state column
-location_col = find_column(vax, ["Location", "location", "State", "state", "STATE", "state_code", "State Code"],
-                          description="state/location identifier")
-date_col = find_column(vax, ["Date", "date", "DATE", "week_end_date", "Week End Date", "end_date"],
-                      description="date")
+    return state_population_year
 
-# Pull key pct fields (try multiple variations)
-col_any = find_column(vax, [
-    "Administered_Dose1_Recip_18PlusPop_Pct",
-    "Administered Dose1 Recip 18PlusPop Pct"
-], description="vaccination percentage (any dose)")
 
-col_full = find_column(vax, [
-    "Series_Complete_18PlusPop_Pct",
-    "Series Complete 18PlusPop Pct"
-], description="vaccination percentage (fully vaccinated)")
+def build_us_population_year(state_population_year: pd.DataFrame) -> pd.DataFrame:
+    """
+    National population per year = sum of 50 states' populations.
+    """
+    us_pop = (
+        state_population_year
+        .groupby("year", as_index=False)["population"]
+        .sum()
+    )
+    return us_pop  # columns: year, population
 
-col_boost = find_column(vax, [
-    "Additional_Doses_18Plus_Vax_Pct",
-    "Additional Doses 18Plus Vax Pct",
-    "Booster_18Plus_Pct",
-    "Booster 18Plus Pct"
-], required=False, description="booster percentage")
 
-# If booster column not found, create it as NaN
-if col_boost is None:
-    col_boost = "Additional_Doses_18Plus_Vax_Pct"
-    vax[col_boost] = np.nan
+# -------------------------------------------------------------------
+# Hesitancy (county-weighted into state)
+# -------------------------------------------------------------------
 
-vax_clean = vax[[location_col, date_col, col_any, col_full, col_boost]].copy()
-# Rename to normalized names for easier access
-vax_clean.rename(columns={
-    location_col: "Location",
-    date_col: "Date",
-    col_any: "_col_any",
-    col_full: "_col_full",
-    col_boost: "_col_boost"
-}, inplace=True)
+def build_state_hesitancy(hes_file: str, pop_file: str) -> pd.DataFrame:
+    """
+    Returns DataFrame [state_usps, hesitancy_pct] where hesitancy_pct
+    is 100 * population-weighted mean of 'Estimated hesitant or unsure'
+    using 2021 county population.
+    """
+    hes = pd.read_csv(
+        hes_file,
+        usecols=["County Name", "State", "Estimated hesitant or unsure"],
+    )
 
-vax_clean["state_usps"] = vax_clean["Location"].str.strip().str.upper()
-vax_clean["week_end_date_vax"] = vax_clean["Date"].apply(to_iso_date)
+    hes = hes.rename(
+        columns={
+            "County Name": "county_raw",
+            "State": "state_raw",
+            "Estimated hesitant or unsure": "hes_prop",
+        }
+    )
 
-vax_clean["vacc_pct_any_18p"]  = vax_clean["_col_any"].apply(clean_numeric)
-vax_clean["vacc_pct_full_18p"] = vax_clean["_col_full"].apply(clean_numeric)
-vax_clean["booster_pct_18p"]   = vax_clean["_col_boost"].apply(clean_numeric)
+    hes["state_name"] = hes["state_raw"].str.title()
+    # "Tallapoosa County, Alabama" -> "Tallapoosa County"
+    hes["county_label"] = hes["county_raw"].str.split(",").str[0].str.strip()
 
-vax_clean = vax_clean[["state_usps","week_end_date_vax","vacc_pct_any_18p","vacc_pct_full_18p","booster_pct_18p"]].dropna(subset=["state_usps","week_end_date_vax"])
-vax_clean["week_end_dt_vax"] = pd.to_datetime(vax_clean["week_end_date_vax"], errors="coerce")
+    hes["hes_prop"] = pd.to_numeric(hes["hes_prop"], errors="coerce")
+    # If values are in 0–100 instead of 0–1, convert
+    if hes["hes_prop"].max(skipna=True) > 1.0:
+        hes["hes_prop"] = hes["hes_prop"] / 100.0
 
-# =========================
-# 5) Join Cases (left) ⟵ nearest-week Vaccinations (right)
-# =========================
-left = cases.copy()
-right = vax_clean.copy()
+    # County populations for 2021
+    pop = pd.read_csv(
+        pop_file,
+        encoding="latin1",
+        usecols=["STNAME", "CTYNAME", "POPESTIMATE2021"],
+    )
+    county_pop = pop[pop["CTYNAME"] != pop["STNAME"]].copy()
+    county_pop = county_pop.rename(
+        columns={
+            "STNAME": "state_name",
+            "CTYNAME": "county_label",
+            "POPESTIMATE2021": "pop_2021",
+        }
+    )
 
-left.rename(columns={"week_end_dt":"_left_dt"}, inplace=True)
-right.rename(columns={"week_end_dt_vax":"_right_dt"}, inplace=True)
+    merged = hes.merge(
+        county_pop,
+        how="inner",
+        on=["state_name", "county_label"],
+    )
 
-joined = left_join_nearest_week(
-    df_left=left,
-    df_right=right,
-    on_keys=["state_usps"],
-    left_date_col="_left_dt",
-    right_date_col="_right_dt",
-    max_gap_days=3
-)
+    state_agg = (
+        merged
+        .groupby("state_name", as_index=False)
+        .apply(lambda g: (g["hes_prop"] * g["pop_2021"]).sum() / g["pop_2021"].sum())
+        .rename(columns={None: "hes_prop_state"})
+    )
 
-# Keep one date (from cases) as canonical week_end_date
-keep_cols = [
-    "state_usps","state_fips","population","week_end_date",
-    "cases_per_100k","deaths_per_100k",
-    "vacc_pct_any_18p","vacc_pct_full_18p","booster_pct_18p"
-]
-fact = joined[keep_cols].copy()
+    state_agg["state_usps"] = state_agg["state_name"].map(STATE_ABBR)
+    state_agg = state_agg[state_agg["state_usps"].isin(VALID_STATES)].copy()
 
-# =========================
-# 6) Attach Hesitancy (state-level, static)
-# =========================
-fact = fact.merge(hes_state[["state_usps","hesitancy_pct"]], on="state_usps", how="left")
+    state_agg["hesitancy_pct"] = (state_agg["hes_prop_state"] * 100).round(2)
 
-# =========================
-# 7) Final ordering, dtypes, and sanity checks
-# =========================
-fact = fact.sort_values(["state_usps","week_end_date"]).reset_index(drop=True)
-# Remove any impossible values
-for pct_col in ["vacc_pct_any_18p","vacc_pct_full_18p","booster_pct_18p","hesitancy_pct"]:
-    if pct_col in fact.columns:
-        fact.loc[(fact[pct_col] < 0) | (fact[pct_col] > 100), pct_col] = np.nan
+    return state_agg[["state_usps", "hesitancy_pct"]]
 
-# Select final column order
-fact = fact[[
-    "state_fips","state_usps","week_end_date",
-    "vacc_pct_full_18p","vacc_pct_any_18p","booster_pct_18p",
-    "cases_per_100k","deaths_per_100k",
-    "hesitancy_pct",
-    "population"
-]]
 
-# =========================
-# 8) National weekly timeseries (population-weighted)
-# =========================
-def pop_weighted_avg(group, num_col):
-    # weights = population; ignore NaNs
-    v = group[num_col].astype(float)
-    w = group["population"].astype(float)
-    mask = (~v.isna()) & (~w.isna())
-    if mask.sum() == 0:
-        return np.nan
-    return np.average(v[mask], weights=w[mask])
+# -------------------------------------------------------------------
+# Vaccination coverage by state-week
+# -------------------------------------------------------------------
 
-nat = (
-    fact.groupby("week_end_date", as_index=False)
-        .agg(vacc_pct_full_18p = ("vacc_pct_full_18p", lambda s: pop_weighted_avg(fact.loc[s.index], "vacc_pct_full_18p")),
-             cases_per_100k     = ("cases_per_100k",     lambda s: pop_weighted_avg(fact.loc[s.index], "cases_per_100k")),
-             deaths_per_100k    = ("deaths_per_100k",    lambda s: pop_weighted_avg(fact.loc[s.index], "deaths_per_100k")))
-        .sort_values("week_end_date")
-)
+def build_vacc_state_week(vax_file: str) -> pd.DataFrame:
+    """
+    From COVID-19_Vaccinations by State.csv build:
+      vacc_state_week[state_usps, week_end_date, vacc_pct_any_18p, vacc_pct_full_18p, booster_pct_18p]
+    keeping only Wednesdays in the [START_DATE, END_DATE] range and only 50 states.
+    """
+    usecols = [
+        "Date",
+        "Location",
+        "Administered_Dose1_Recip_18PlusPop_Pct",
+        "Series_Complete_18PlusPop_Pct",
+        "Additional_Doses_18Plus_Vax_Pct",
+    ]
+    vax = pd.read_csv(vax_file, usecols=usecols)
 
-# =========================
-# 9) Clean Event Markers (pass through, normalize date)
-# =========================
-events = pd.read_csv(PATH_EVENTS, dtype=str).rename(columns=lambda c: c.strip())
+    vax["Date"] = pd.to_datetime(vax["Date"])
+    vax = vax[(vax["Date"] >= START_DATE) & (vax["Date"] <= END_DATE)].copy()
 
-# Find event columns with flexible matching
-date_col = find_column(events, ["Date", "date", "DATE", "event_date", "Event Date"],
-                      description="event date")
-event_col = find_column(events, ["Event", "event", "EVENT", "event_name", "Event Name"],
-                       description="event description")
-source_col = find_column(events, ["Source", "source", "SOURCE", "source_name"],
-                        required=False, description="event source")
-url_col = find_column(events, ["Official_Source_URL", "Official Source URL", "official_source_url", 
-                               "Source_URL", "Source URL", "URL", "url"],
-                     required=False, description="source URL")
+    # Wednesdays only (weekday: Mon=0, Wed=2)
+    vax = vax[vax["Date"].dt.weekday == 2].copy()
 
-events_out = pd.DataFrame({
-    "date": events[date_col].apply(to_iso_date),
-    "event": events[event_col],
-    "source": events[source_col] if source_col else "",
-    "official_source_url": events[url_col] if url_col else ""
-})
+    vax["state_usps"] = vax["Location"].str.upper()
+    vax = vax[vax["state_usps"].isin(VALID_STATES)].copy()
 
-# =========================
-# 10) Write outputs
-# =========================
-fact.to_csv(OUT_FACT, index=False)
-nat.to_csv(OUT_NAT, index=False)
-events_out.to_csv(OUT_EVENTS, index=False)
+    vax["vacc_pct_any_18p"] = pd.to_numeric(
+        vax["Administered_Dose1_Recip_18PlusPop_Pct"], errors="coerce"
+    )
+    vax["vacc_pct_full_18p"] = pd.to_numeric(
+        vax["Series_Complete_18PlusPop_Pct"], errors="coerce"
+    )
+    vax["booster_pct_18p"] = pd.to_numeric(
+        vax["Additional_Doses_18Plus_Vax_Pct"], errors="coerce"
+    )
 
-# =========================
-# 11) Console summary
-# =========================
-print("\n=== ETL COMPLETE ===")
-print(f"state_week_fact.csv rows: {len(fact):,}  → {OUT_FACT}")
-print(f"national_week_timeseries.csv rows: {len(nat):,}  → {OUT_NAT}")
-print(f"vaccine_event_markers_clean.csv rows: {len(events_out):,} → {OUT_EVENTS}")
+    out = vax[["state_usps", "Date", "vacc_pct_any_18p",
+               "vacc_pct_full_18p", "booster_pct_18p"]].copy()
+    out = out.rename(columns={"Date": "week_end_date"})
 
-print("\nSample state_week_fact:")
-print(fact.head(8).to_string(index=False))
+    # Ensure sorted and rounded
+    out = out.sort_values(["state_usps", "week_end_date"])
+    out[["vacc_pct_any_18p", "vacc_pct_full_18p", "booster_pct_18p"]] = (
+        out[["vacc_pct_any_18p", "vacc_pct_full_18p", "booster_pct_18p"]].round(2)
+    )
 
-# Coverage quick check
-total_weeks_states = fact[["state_usps","week_end_date"]].drop_duplicates().shape[0]
-missing_vax = fact["vacc_pct_full_18p"].isna().mean()
-missing_cases = fact["cases_per_100k"].isna().mean()
-print("\nCoverage:")
-print(f"Unique (state, week) combos: {total_weeks_states:,}")
-print(f"% rows missing vacc_pct_full_18p: {missing_vax:.1%}")
-print(f"% rows missing cases_per_100k:    {missing_cases:.1%}")
+    return out
 
+
+# -------------------------------------------------------------------
+# Cases & deaths by state-week (weekly + cumulative per 100k)
+# -------------------------------------------------------------------
+
+def build_cases_state_week(cases_file: str,
+                           state_population_year: pd.DataFrame) -> pd.DataFrame:
+    """
+    From COVID-19 Cases & Deaths by State.csv build:
+
+      cases_state_week[
+         state_usps, week_end_date, population,
+         weekly_cases_per_100k, weekly_deaths_per_100k,
+         cases_per_100k, deaths_per_100k,
+         weekly_cases_count, weekly_deaths_count,
+         tot_cases, tot_deaths
+      ]
+
+    Weekly metrics are based on the change in cumulative totals
+    (tot_cases, tot_deaths), which automatically include historic
+    backfills and corrections.
+    """
+    usecols = [
+        "state", "end_date",
+        "tot_cases", "new_cases",
+        "tot_deaths", "new_deaths",
+        "new_historic_cases", "new_historic_deaths",
+    ]
+
+    cases = pd.read_csv(
+        cases_file,
+        usecols=usecols,
+        thousands=",",
+    )
+
+    cases["end_date"] = pd.to_datetime(cases["end_date"])
+
+    # Filter time window
+    mask = (cases["end_date"] >= START_DATE) & (cases["end_date"] <= END_DATE)
+    cases = cases.loc[mask].copy()
+
+    # Only the 50 states (drop DC, NYC, territories)
+    cases["state_usps"] = cases["state"].str.upper()
+    cases = cases[cases["state_usps"].isin(VALID_STATES)].copy()
+
+    # Numeric conversions
+    for col in ["tot_cases", "new_cases", "tot_deaths", "new_deaths",
+                "new_historic_cases", "new_historic_deaths"]:
+        if col in cases.columns:
+            cases[col] = pd.to_numeric(cases[col], errors="coerce").fillna(0).astype(int)
+        else:
+            cases[col] = 0
+
+    cases = cases.rename(columns={"end_date": "week_end_date"})
+
+    # Join population by year
+    cases["year"] = cases["week_end_date"].dt.year
+    cases = cases.merge(
+        state_population_year,
+        how="left",
+        left_on=["state_usps", "year"],
+        right_on=["state_usps", "year"],
+    )
+
+    # Sort for diff-based weekly counts
+    cases = cases.sort_values(["state_usps", "week_end_date"])
+
+    # Weekly counts from change in cumulative totals
+    cases["weekly_cases_count"] = (
+        cases.groupby("state_usps")["tot_cases"]
+        .diff()
+        .fillna(cases["tot_cases"])
+    )
+    cases["weekly_deaths_count"] = (
+        cases.groupby("state_usps")["tot_deaths"]
+        .diff()
+        .fillna(cases["tot_deaths"])
+    )
+
+    # Per 100k metrics
+    pop = cases["population"].astype(float)
+    cases["weekly_cases_per_100k"]  = (cases["weekly_cases_count"]  / pop * 1e5).round(2)
+    cases["weekly_deaths_per_100k"] = (cases["weekly_deaths_count"] / pop * 1e5).round(2)
+    cases["cases_per_100k"]         = (cases["tot_cases"]           / pop * 1e5).round(2)
+    cases["deaths_per_100k"]        = (cases["tot_deaths"]          / pop * 1e5).round(2)
+
+    out = cases[[
+        "state_usps", "week_end_date", "population",
+        "weekly_cases_per_100k", "weekly_deaths_per_100k",
+        "cases_per_100k", "deaths_per_100k",
+        "weekly_cases_count", "weekly_deaths_count",
+        "tot_cases", "tot_deaths",
+    ]].copy()
+
+    return out
+
+
+# -------------------------------------------------------------------
+# Assemble state_week panel
+# -------------------------------------------------------------------
+
+def build_state_week(vax_state_week: pd.DataFrame,
+                     cases_state_week: pd.DataFrame,
+                     hes_state: pd.DataFrame) -> pd.DataFrame:
+    """
+    Combine vaccination, cases/deaths, and hesitancy into
+    a full panel of 50 states × all Wednesdays.
+    """
+    weeks = wednesday_range()
+    states = sorted(list(VALID_STATES))
+
+    skeleton = pd.MultiIndex.from_product(
+        [states, weeks],
+        names=["state_usps", "week_end_date"]
+    ).to_frame(index=False)
+
+    out = skeleton.merge(
+        vax_state_week,
+        how="left",
+        on=["state_usps", "week_end_date"],
+    )
+    out = out.merge(
+        cases_state_week,
+        how="left",
+        on=["state_usps", "week_end_date"],
+    )
+    out = out.merge(
+        hes_state,
+        how="left",
+        on="state_usps",
+    )
+
+    # Fill NaNs: missing vax -> 0, missing cases/deaths -> 0
+    num_cols_zero = [
+        "vacc_pct_any_18p", "vacc_pct_full_18p", "booster_pct_18p",
+        "weekly_cases_per_100k", "weekly_deaths_per_100k",
+        "cases_per_100k", "deaths_per_100k",
+        "weekly_cases_count", "weekly_deaths_count",
+        "tot_cases", "tot_deaths",
+    ]
+    for col in num_cols_zero:
+        if col in out.columns:
+            out[col] = out[col].fillna(0)
+
+    # For population, carry the joined values (should not be NaN after merge)
+    out["population"] = out["population"].fillna(method="ffill")
+
+    # Hesitancy: just keep state-level baseline
+    out["hesitancy_pct"] = out["hesitancy_pct"].round(2)
+
+    out = out.sort_values(["state_usps", "week_end_date"])
+
+    return out
+
+
+# -------------------------------------------------------------------
+# National weekly aggregates
+# -------------------------------------------------------------------
+
+def build_nat_week(state_week: pd.DataFrame,
+                   us_population_year: pd.DataFrame,
+                   hes_state: pd.DataFrame,
+                   state_population_year: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build nat_week with cumulative + weekly metrics for the US.
+    """
+    agg = (
+        state_week
+        .groupby("week_end_date", as_index=False)[["tot_cases", "tot_deaths"]]
+        .sum()
+    )
+
+    # Attach national population by year
+    agg["year"] = agg["week_end_date"].dt.year
+    agg = agg.merge(
+        us_population_year,
+        how="left",
+        on="year",
+        suffixes=("", "_us"),
+    ).rename(columns={"population": "population"})
+    agg = agg.sort_values("week_end_date")
+
+    pop = agg["population"].astype(float)
+
+    # Weekly counts from change in national cumulative totals
+    agg["weekly_cases_count"] = agg["tot_cases"].diff().fillna(agg["tot_cases"])
+    agg["weekly_deaths_count"] = agg["tot_deaths"].diff().fillna(agg["tot_deaths"])
+
+    # Per 100k metrics
+    agg["weekly_cases_per_100k"]  = (agg["weekly_cases_count"]  / pop * 1e5).round(2)
+    agg["weekly_deaths_per_100k"] = (agg["weekly_deaths_count"] / pop * 1e5).round(2)
+    agg["cases_per_100k"]         = (agg["tot_cases"]           / pop * 1e5).round(2)
+    agg["deaths_per_100k"]        = (agg["tot_deaths"]          / pop * 1e5).round(2)
+
+    # Vaccination: population-weighted average across states
+    vax_cols = ["vacc_pct_any_18p", "vacc_pct_full_18p", "booster_pct_18p"]
+    vax_agg = (
+        state_week
+        .groupby("week_end_date")
+        .apply(
+            lambda g: pd.Series(
+                {
+                    col: (
+                        (g[col].fillna(0) * g["population"]).sum() /
+                        g["population"].sum()
+                    )
+                    for col in vax_cols
+                }
+            )
+        )
+        .reset_index()
+    )
+    vax_agg[vax_cols] = vax_agg[vax_cols].round(2)
+
+    nat = agg.merge(vax_agg, how="left", on="week_end_date")
+
+    # National hesitancy: 2021 population-weighted mean of states
+    hes_merge = hes_state.merge(
+        state_population_year[state_population_year["year"] == 2021],
+        on="state_usps",
+        how="left",
+    )
+    hes_prop = (
+        (hes_merge["hesitancy_pct"] / 100 * hes_merge["population"]).sum()
+        / hes_merge["population"].sum()
+    )
+    hes_pct_us = round(hes_prop * 100, 2)
+
+    nat["state_usps"] = "US"
+    nat["hesitancy_pct"] = hes_pct_us
+
+    nat = nat[
+        [
+            "state_usps", "week_end_date",
+            "vacc_pct_any_18p", "vacc_pct_full_18p", "booster_pct_18p",
+            "weekly_cases_per_100k", "weekly_deaths_per_100k",
+            "cases_per_100k", "deaths_per_100k",
+            "weekly_cases_count", "weekly_deaths_count",
+            "tot_cases", "tot_deaths",
+            "hesitancy_pct", "population",
+        ]
+    ].copy()
+
+    return nat.sort_values("week_end_date")
+
+
+# -------------------------------------------------------------------
+# Main
+# -------------------------------------------------------------------
+
+def main():
+    ensure_output_dir()
+
+    print("Loading population tables...")
+    state_population_year = build_state_population_year(PATH_POP)
+    us_population_year    = build_us_population_year(state_population_year)
+
+    print("Building state hesitancy...")
+    hes_state = build_state_hesitancy(PATH_HES, PATH_POP)
+
+    print("Building vaccination panel...")
+    vax_state_week = build_vacc_state_week(PATH_VAX)
+
+    print("Building cases/deaths panel...")
+    cases_state_week = build_cases_state_week(PATH_CASES, state_population_year)
+
+    print("Assembling state_week panel...")
+    state_week = build_state_week(vax_state_week, cases_state_week, hes_state)
+
+    print("Building nat_week panel...")
+    nat_week = build_nat_week(state_week, us_population_year,
+                              hes_state, state_population_year)
+
+    # Sanity check shapes: 50 states × 126 weeks
+    n_weeks = state_week["week_end_date"].nunique()
+    n_states = state_week["state_usps"].nunique()
+    print(f"state_week: {state_week.shape[0]} rows ({n_states} states × {n_weeks} weeks)")
+    print(f"nat_week:   {nat_week.shape[0]} rows (weeks)")
+
+    # Write outputs
+    state_path = os.path.join(OUTPUT_DIR, "state_week.csv")
+    nat_path   = os.path.join(OUTPUT_DIR, "nat_week.csv")
+
+    state_week.to_csv(state_path, index=False)
+    nat_week.to_csv(nat_path, index=False)
+
+    print(f"Wrote {state_path}")
+    print(f"Wrote {nat_path}")
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()

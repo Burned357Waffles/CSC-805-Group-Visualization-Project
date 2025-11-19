@@ -10,7 +10,7 @@ import {
   Brush,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui";
-import { MOCK_NATIONAL_TIMELINE } from "../lib/mock";
+import { useNationalTimeline } from "../lib/data";
 import { useAppStore } from "../store/useAppStore";
 
 // Palette (unchanged)
@@ -68,7 +68,8 @@ function CustomTooltip({ active, payload, label }: { active?: boolean; payload?:
 }
 
 export default function NationalTimeline() {
-  const data = MOCK_NATIONAL_TIMELINE;
+  const { data: nat } = useNationalTimeline();
+  const data = nat ?? [];
 
   const rangeStart = useAppStore((s) => s.rangeStart);
   const rangeEnd = useAppStore((s) => s.rangeEnd);

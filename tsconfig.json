@@ -1,5 +1,14 @@
 {
   "compilerOptions": {
-    "jsx": "react-jsx"
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "downlevelIteration": true,
+    "types": ["react", "react-dom", "vite/client"],
+    "skipLibCheck": true,
+    "strict": true
   }
 }
