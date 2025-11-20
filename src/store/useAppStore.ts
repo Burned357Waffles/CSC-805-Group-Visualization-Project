@@ -1,72 +1,100 @@
+// src/store/useAppStore.ts
 import { create } from "zustand";
-import { OutcomeKey } from "../lib/types";
+import type { OutcomeKey } from "../lib/types";
 
-type State = {
+export type AppState = {
+  // Navigation
   activeTab: "overview" | "state" | "compare" | "hesitancy";
 
-  /** Selected state label; "All states" means no filter */
+  // Selected geography (UI label: "All states" or full state name like "Arkansas")
   state: string;
 
-  /** Cases or deaths for the map/outcome toggles */
+  // Outcome metric for choropleth / compare
   outcome: OutcomeKey;
 
-  /** Global time brush (single source of truth) */
-  rangeStart: number; // 1..52
-  rangeEnd: number;   // 1..52
+  // Time selection (1-based indices into the national timeline array)
+  rangeStart: number;
+  rangeEnd: number;
 
-  /** Back-compat: a single-week slider can still read/write this. */
+  // “Focused” week (used by map & KPIs) — also 1-based index
   week: number;
+
+  // Total number of weeks available from the data
   maxWeek: number;
 
-  setActiveTab: (t: State["activeTab"]) => void;
-  setState: (s: string) => void;
-  setOutcome: (o: OutcomeKey) => void;
-
-  /** Snap the brush to a 1-week window at w */
-  setWeek: (w: number) => void;
-
-  /** Set a 2-handle brush range */
+  // Actions
+  setActiveTab: (tab: AppState["activeTab"]) => void;
+  setState: (state: string) => void;
+  setOutcome: (outcome: OutcomeKey) => void;
+  setWeek: (week: number) => void;
   setRange: (start: number, end: number) => void;
-
+  setMaxWeek: (maxWeek: number) => void;
   resetAll: () => void;
 };
 
-export const useAppStore = create<State>((set) => ({
+const INITIAL_MAX_WEEK = 52; // will be overwritten once real data loads
+
+export const useAppStore = create<AppState>((set, get) => ({
   activeTab: "overview",
   state: "All states",
   outcome: "cases_per_100k",
 
   rangeStart: 1,
-  rangeEnd: 52,
+  rangeEnd: INITIAL_MAX_WEEK,
+  week: INITIAL_MAX_WEEK,
+  maxWeek: INITIAL_MAX_WEEK,
 
-  week: 52,
-  maxWeek: 52,
+  setActiveTab: (tab) => set({ activeTab: tab }),
 
-  setActiveTab: (t) => set({ activeTab: t }),
-  setState: (s) => set({ state: s || "All states" }),
-  setOutcome: (o) => set({ outcome: o }),
+  setState: (state) => set({ state }),
 
-  setWeek: (w) =>
-    set((prev) => {
-      const ww = Math.min(Math.max(1, w), prev.maxWeek);
-      // Snap global brush to a 1-week window at w (right edge = w)
-      return { week: ww, rangeStart: ww, rangeEnd: ww };
+  setOutcome: (outcome) => set({ outcome }),
+
+  setWeek: (week) =>
+    set((state) => {
+      const max = state.maxWeek || 1;
+      const w = Math.min(Math.max(1, week), max);
+      return {
+        week: w,
+        rangeStart: w,
+        rangeEnd: w,
+      };
     }),
 
   setRange: (start, end) =>
-    set((prev) => {
+    set((state) => {
+      const max = state.maxWeek || 1;
       const lo = Math.max(1, Math.min(start, end));
-      const hi = Math.min(prev.maxWeek, Math.max(start, end));
-      return { rangeStart: lo, rangeEnd: hi, week: hi };
+      const hi = Math.min(max, Math.max(start, end));
+      return {
+        rangeStart: lo,
+        rangeEnd: hi,
+        week: hi,
+      };
+    }),
+
+  // Called once national timeline data loads (nat.length)
+  setMaxWeek: (maxWeek) =>
+    set((state) => {
+      const safeMax = Math.max(1, maxWeek);
+      const week = Math.min(state.week, safeMax);
+      const rangeEnd = Math.min(state.rangeEnd, safeMax);
+      const rangeStart = Math.min(state.rangeStart, rangeEnd);
+      return {
+        maxWeek: safeMax,
+        week,
+        rangeStart,
+        rangeEnd,
+      };
     }),
 
   resetAll: () =>
-    set({
+    set((state) => ({
       activeTab: "overview",
       state: "All states",
       outcome: "cases_per_100k",
       rangeStart: 1,
-      rangeEnd: 52,
-      week: 52,
-    }),
+      rangeEnd: state.maxWeek || INITIAL_MAX_WEEK,
+      week: state.maxWeek || INITIAL_MAX_WEEK,
+    })),
 }));

@@ -1,110 +1,148 @@
 // src/lib/data.ts
-// Tiny, dependency-free data adapter for the 3 cleaned CSVs in /public/data.
-// Exposes typed hooks/components can call without changing the rest of your app.
+// Data adapter for cleaned CSVs in /public/data.
+// Exposes hooks that work with real state_week.csv and nat_week.csv.
 
 import { useEffect, useMemo, useState } from "react";
-import type { KpiCard, NationalPoint, StateLatest } from "./types";
+import type {
+  KpiCard,
+  NationalPoint,
+  StateLatest,
+  WeekString,
+} from "./types";
 
-const FACT_URL = "/data/state_week_fact.csv";
-const NAT_URL  = "/data/national_week_timeseries.csv"; // not strictly required, but kept for parity
-const EVENTS_URL = "/data/vaccine_event_markers_clean.csv"; // not used on these pages today
+const STATE_URL = "/data/state_week.csv";
+const NAT_URL = "/data/nat_week.csv";
 
-// --- Utils ---
-// very small CSV parser (no quotes-in-quotes handling needed for our cleaned files)
+// --- CSV utils ----------------------------------------------------
+
 function parseCSV<T = Record<string, string>>(text: string): T[] {
   const lines = text.trim().split(/\r?\n/);
+  if (!lines.length) return [];
   const headers = lines[0].split(",").map((h) => h.trim());
+
   return lines.slice(1).map((ln) => {
     const cells = ln.split(",").map((c) => c.trim());
     const row: Record<string, string> = {};
-    headers.forEach((h, i) => (row[h] = cells[i] ?? ""));
+    headers.forEach((h, i) => {
+      row[h] = cells[i] ?? "";
+    });
     return row as unknown as T;
   });
 }
 
-function toNum(s: string | undefined) {
-  if (!s) return NaN;
-  const v = +s;
+function toNum(s: string | undefined): number {
+  if (s == null || s === "") return NaN;
+  const v = Number(s);
   return Number.isFinite(v) ? v : NaN;
 }
 
-type FactRow = {
-  state_fips: string;
+// --- Raw CSV row shapes -------------------------------------------
+// These follow the cleaned CSV headers.
+
+type StateWeekCsvRow = {
   state_usps: string;
-  week_end_date: string;         // ISO yyyy-mm-dd
-  vacc_pct_full_18p: string;     // primary
-  vacc_pct_any_18p: string;      // any
+  week_end_date: string;
+
+  vacc_pct_any_18p: string;
+  vacc_pct_full_18p: string;
   booster_pct_18p: string;
-  cases_per_100k: string;
-  deaths_per_100k: string;
+
+  // WEEKLY metrics per 100k — these are what we want for KPIs & map.
+  weekly_cases_per_100k: string;
+  weekly_deaths_per_100k: string;
+
   hesitancy_pct: string;
   population: string;
+
+  // Cumulative counts (kept for completeness, not used in UI)
+  tot_cases?: string;
+  tot_deaths?: string;
 };
 
-// --- core loader (memoized across the app via module singleton) ---
-let _factCache: Promise<FactRow[]> | null = null;
+type NatWeekCsvRow = {
+  state_usps: string; // "US"
+  week_end_date: string;
 
-async function loadFact(): Promise<FactRow[]> {
-  if (_factCache) return _factCache;
-  _factCache = (async () => {
-    const res = await fetch(FACT_URL);
+  vacc_pct_any_18p: string;
+  vacc_pct_full_18p: string;
+  booster_pct_18p: string;
+
+  weekly_cases_per_100k: string;
+  weekly_deaths_per_100k: string;
+
+  hesitancy_pct: string;
+  population: string;
+
+  tot_cases?: string;
+  tot_deaths?: string;
+};
+
+// --- Caches & loaders ---------------------------------------------
+
+let _stateCache: Promise<StateWeekCsvRow[]> | null = null;
+let _natCache: Promise<NatWeekCsvRow[]> | null = null;
+
+async function loadStateWeek(): Promise<StateWeekCsvRow[]> {
+  if (_stateCache) return _stateCache;
+  _stateCache = (async () => {
+    const res = await fetch(STATE_URL);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch ${STATE_URL}: ${res.status}`);
+    }
     const txt = await res.text();
-    return parseCSV<FactRow>(txt);
+    return parseCSV<StateWeekCsvRow>(txt);
   })();
-  return _factCache;
+  return _stateCache;
 }
 
-// ----- Hooks your components will use -----
+async function loadNatWeek(): Promise<NatWeekCsvRow[]> {
+  if (_natCache) return _natCache;
+  _natCache = (async () => {
+    const res = await fetch(NAT_URL);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch ${NAT_URL}: ${res.status}`);
+    }
+    const txt = await res.text();
+    return parseCSV<NatWeekCsvRow>(txt);
+  })();
+  return _natCache;
+}
 
-/** National timeline, pop-weighted from fact so we can provide any/primary/booster */
-export function useNationalTimeline(): { data: NationalPoint[] | null; loading: boolean; error?: string } {
+// --- Hooks --------------------------------------------------------
+
+/**
+ * National weekly time series (US aggregate).
+ * cases_per_100k / deaths_per_100k here are WEEKLY per-100k values.
+ */
+export function useNationalTimeline(): {
+  data: NationalPoint[] | null;
+  loading: boolean;
+  error?: string;
+} {
   const [data, setData] = useState<NationalPoint[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | undefined>();
 
   useEffect(() => {
     let mounted = true;
-    loadFact()
-      .then((fact) => {
+
+    loadNatWeek()
+      .then((rows) => {
         if (!mounted) return;
 
-        // group by week_end_date
-        const byWeek = new Map<string, FactRow[]>();
-        for (const r of fact) {
-          if (!r.week_end_date) continue;
-          const arr = byWeek.get(r.week_end_date) ?? [];
-          arr.push(r);
-          byWeek.set(r.week_end_date, arr);
-        }
+        const sorted = [...rows].sort((a, b) =>
+          a.week_end_date.localeCompare(b.week_end_date)
+        );
 
-        const weeks = Array.from(byWeek.keys()).sort();
-        const out: NationalPoint[] = weeks.map((d) => {
-          const rows = byWeek.get(d)!;
-          let wAny = 0, wPrim = 0, wBoost = 0, wCases = 0, wDeaths = 0, wSum = 0;
-          for (const r of rows) {
-            const pop = toNum(r.population);
-            if (!Number.isFinite(pop) || pop <= 0) continue;
-            const any = toNum(r.vacc_pct_any_18p);
-            const pri = toNum(r.vacc_pct_full_18p);
-            const boo = toNum(r.booster_pct_18p);
-            const cs  = toNum(r.cases_per_100k);
-            const ds  = toNum(r.deaths_per_100k);
-            wAny   += (Number.isFinite(any) ? any : 0) * pop;
-            wPrim  += (Number.isFinite(pri) ? pri : 0) * pop;
-            wBoost += (Number.isFinite(boo) ? boo : 0) * pop;
-            wCases += (Number.isFinite(cs) ? cs : 0) * pop;
-            wDeaths+= (Number.isFinite(ds) ? ds : 0) * pop;
-            wSum   += pop;
-          }
-          return {
-            week: d, // we already use ISO dates as "week"
-            vaccination_any_pct:    wSum ? +(wAny   / wSum).toFixed(1) : NaN,
-            vaccination_primary_pct:wSum ? +(wPrim  / wSum).toFixed(1) : NaN,
-            vaccination_booster_pct:wSum ? +(wBoost / wSum).toFixed(1) : NaN,
-            cases_per_100k:         wSum ? +(wCases / wSum).toFixed(2) : NaN,
-            deaths_per_100k:        wSum ? +(wDeaths/ wSum).toFixed(2) : NaN,
-          } satisfies NationalPoint;
-        });
+        const out: NationalPoint[] = sorted.map((r) => ({
+          week: r.week_end_date as WeekString,
+          vaccination_any_pct: toNum(r.vacc_pct_any_18p),
+          vaccination_primary_pct: toNum(r.vacc_pct_full_18p),
+          vaccination_booster_pct: toNum(r.booster_pct_18p),
+          // WEEKLY metrics used for line chart + KPIs
+          cases_per_100k: toNum(r.weekly_cases_per_100k),
+          deaths_per_100k: toNum(r.weekly_deaths_per_100k),
+        }));
 
         setData(out);
         setLoading(false);
@@ -114,48 +152,72 @@ export function useNationalTimeline(): { data: NationalPoint[] | null; loading: 
         setErr(String(e));
         setLoading(false);
       });
-    return () => { mounted = false; };
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   return { data, loading, error: err };
 }
 
-/** Latest-by-state for a given week (ISO date). Falls back to the nearest earlier week if needed. */
-export function useStateLatest(weekIso: string): { data: StateLatest[] | null; loading: boolean; error?: string } {
+/**
+ * State snapshot for a given ISO week: used by the choropleth.
+ * cases_per_100k / deaths_per_100k are WEEKLY per-100k values.
+ */
+export function useStateLatest(weekIso: string): {
+  data: StateLatest[] | null;
+  loading: boolean;
+  error?: string;
+} {
   const [data, setData] = useState<StateLatest[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | undefined>();
 
   useEffect(() => {
     let mounted = true;
-    loadFact()
-      .then((fact) => {
+
+    loadStateWeek()
+      .then((rows) => {
         if (!mounted) return;
 
-        // build per-state latest row at or before weekIso
-        const byState = new Map<string, FactRow[]>();
-        for (const r of fact) {
+        // group rows by state
+        const byState = new Map<string, StateWeekCsvRow[]>();
+        for (const r of rows) {
           const arr = byState.get(r.state_usps) ?? [];
           arr.push(r);
           byState.set(r.state_usps, arr);
         }
+
         const out: StateLatest[] = [];
-        for (const [usps, rows] of byState) {
-          rows.sort((a, b) => a.week_end_date.localeCompare(b.week_end_date));
-          // find last <= weekIso
-          const idx = rows.findLastIndex((r) => r.week_end_date <= weekIso);
-          const row = idx >= 0 ? rows[idx] : rows[rows.length - 1];
+        for (const [usps, stateRows] of byState) {
+          stateRows.sort((a, b) =>
+            a.week_end_date.localeCompare(b.week_end_date)
+          );
+
+          // find row at or just before weekIso
+          let idx = stateRows.findIndex((r) => r.week_end_date >= weekIso);
+          if (idx === -1) idx = stateRows.length - 1;
+          if (stateRows[idx]?.week_end_date > weekIso) {
+            idx = Math.max(0, idx - 1);
+          }
+
+          const row = stateRows[idx];
           if (!row) continue;
+
           out.push({
-            fips: row.state_fips,
-            state: usps, // label by USPS here; your map tooltip overrides with proper name
+            // we don’t have numeric FIPS in CSV; use usps as a stable id
+            fips: usps,
+            state: usps,
             usps,
             vaccination_any_pct: toNum(row.vacc_pct_any_18p),
             hesitancy_pct: toNum(row.hesitancy_pct),
-            cases_per_100k: toNum(row.cases_per_100k),
-            deaths_per_100k: toNum(row.deaths_per_100k),
+            // WEEKLY metrics drive the choropleth colors + tooltip
+            cases_per_100k: toNum(row.weekly_cases_per_100k),
+            deaths_per_100k: toNum(row.weekly_deaths_per_100k),
           });
         }
+
         setData(out);
         setLoading(false);
       })
@@ -164,13 +226,22 @@ export function useStateLatest(weekIso: string): { data: StateLatest[] | null; l
         setErr(String(e));
         setLoading(false);
       });
-    return () => { mounted = false; };
+
+    return () => {
+      mounted = false;
+    };
   }, [weekIso]);
 
   return { data, loading, error: err };
 }
 
-/** KPI cards for the selected week; sparkbars = last 10 points from timeline (national or a single state) */
+/**
+ * KPI cards for either:
+ *  - national series (when stateUsps is undefined / "All states"), or
+ *  - a specific state series.
+ *
+ * For cases/deaths, we always use WEEKLY per-100k.
+ */
 export function useKpis(
   weekIso: string,
   stateUsps?: string
@@ -181,94 +252,69 @@ export function useKpis(
 
   useEffect(() => {
     let mounted = true;
+    setLoading(true);
+    setErr(undefined);
 
-    loadFact()
-      .then((fact) => {
+    const isNational = !stateUsps || stateUsps === "All states";
+
+    const work = isNational
+      ? // NATIONAL: use nat_week.csv
+        loadNatWeek().then((natRows) => {
+          const sorted = [...natRows].sort((a, b) =>
+            a.week_end_date.localeCompare(b.week_end_date)
+          );
+
+          const series: NationalPoint[] = sorted.map((r) => ({
+            week: r.week_end_date as WeekString,
+            vaccination_any_pct: toNum(r.vacc_pct_any_18p),
+            vaccination_primary_pct: toNum(r.vacc_pct_full_18p),
+            vaccination_booster_pct: toNum(r.booster_pct_18p),
+            cases_per_100k: toNum(r.weekly_cases_per_100k),
+            deaths_per_100k: toNum(r.weekly_deaths_per_100k),
+          }));
+
+          const hesByWeek = new Map<string, number>();
+          for (const r of sorted) {
+            const h = toNum(r.hesitancy_pct);
+            if (Number.isFinite(h)) hesByWeek.set(r.week_end_date, h);
+          }
+
+          return { series, hesByWeek };
+        })
+      : // STATE: filter state_week.csv by USPS
+        loadStateWeek().then((stateRows) => {
+          const rows = stateRows
+            .filter((r) => r.state_usps === stateUsps)
+            .sort((a, b) => a.week_end_date.localeCompare(b.week_end_date));
+
+          const series: NationalPoint[] = rows.map((r) => ({
+            week: r.week_end_date as WeekString,
+            vaccination_any_pct: toNum(r.vacc_pct_any_18p),
+            vaccination_primary_pct: toNum(r.vacc_pct_full_18p),
+            vaccination_booster_pct: toNum(r.booster_pct_18p),
+            cases_per_100k: toNum(r.weekly_cases_per_100k),
+            deaths_per_100k: toNum(r.weekly_deaths_per_100k),
+          }));
+
+          const hesByWeek = new Map<string, number>();
+          for (const r of rows) {
+            const h = toNum(r.hesitancy_pct);
+            if (Number.isFinite(h)) hesByWeek.set(r.week_end_date, h);
+          }
+
+          return { series, hesByWeek };
+        });
+
+    work
+      .then(({ series, hesByWeek }) => {
         if (!mounted) return;
-
-        // We'll build (1) the metric series (already used) and
-        // (2) a matching hesitancy series keyed by ISO week.
-        const hesByWeek = new Map<string, number>();
-
-        // Build a time series: either for a single state (simple read)
-        // or national (population-weighted aggregation), sorted by week.
-        const series: NationalPoint[] = (() => {
-          if (stateUsps && stateUsps !== "All states") {
-            const rows = fact
-              .filter((r) => r.state_usps === stateUsps)
-              .sort((a, b) => a.week_end_date.localeCompare(b.week_end_date));
-
-            // per-state hesitancy is taken directly (no pop aggregation needed within a state)
-            for (const r of rows) {
-              const hes = toNum(r.hesitancy_pct);
-              if (Number.isFinite(hes)) hesByWeek.set(r.week_end_date, hes);
-            }
-
-            return rows.map((r) => ({
-              week: r.week_end_date,
-              vaccination_any_pct: toNum(r.vacc_pct_any_18p),
-              vaccination_primary_pct: toNum(r.vacc_pct_full_18p),
-              vaccination_booster_pct: toNum(r.booster_pct_18p),
-              cases_per_100k: toNum(r.cases_per_100k),
-              deaths_per_100k: toNum(r.deaths_per_100k),
-            }));
-          }
-
-          // National: pop-weighted aggregation (same logic as useNationalTimeline)
-          const byWeek = new Map<string, FactRow[]>();
-          for (const r of fact) {
-            if (!r.week_end_date) continue;
-            const arr = byWeek.get(r.week_end_date) ?? [];
-            arr.push(r);
-            byWeek.set(r.week_end_date, arr);
-          }
-          const weeks = Array.from(byWeek.keys()).sort();
-
-          // Populate hesitancy (pop-weighted) alongside the metric series
-          for (const d of weeks) {
-            const rows = byWeek.get(d)!;
-            let wHes = 0, wSum = 0;
-            for (const r of rows) {
-              const pop = toNum(r.population);
-              if (!Number.isFinite(pop) || pop <= 0) continue;
-              const hes = toNum(r.hesitancy_pct);
-              wHes += (Number.isFinite(hes) ? hes : 0) * pop;
-              wSum += pop;
-            }
-            const h = wSum ? +(wHes / wSum).toFixed(1) : NaN;
-            if (Number.isFinite(h)) hesByWeek.set(d, h);
-          }
-
-          return weeks.map((d) => {
-            const rows = byWeek.get(d)!;
-            let wAny = 0, wPrim = 0, wBoost = 0, wCases = 0, wDeaths = 0, wSum = 0;
-            for (const r of rows) {
-              const pop = toNum(r.population);
-              if (!Number.isFinite(pop) || pop <= 0) continue;
-              wAny   += (toNum(r.vacc_pct_any_18p)   || 0) * pop;
-              wPrim  += (toNum(r.vacc_pct_full_18p)  || 0) * pop;
-              wBoost += (toNum(r.booster_pct_18p)    || 0) * pop;
-              wCases += (toNum(r.cases_per_100k)     || 0) * pop;
-              wDeaths+= (toNum(r.deaths_per_100k)    || 0) * pop;
-              wSum   += pop;
-            }
-            return {
-              week: d,
-              vaccination_any_pct:     wSum ? +(wAny   / wSum).toFixed(1) : NaN,
-              vaccination_primary_pct: wSum ? +(wPrim  / wSum).toFixed(1) : NaN,
-              vaccination_booster_pct: wSum ? +(wBoost / wSum).toFixed(1) : NaN,
-              cases_per_100k:          wSum ? +(wCases / wSum).toFixed(2) : NaN,
-              deaths_per_100k:         wSum ? +(wDeaths/ wSum).toFixed(2) : NaN,
-            } as NationalPoint;
-          });
-        })();
-
         if (!series.length) {
-          if (mounted) { setKpis(null); setLoading(false); }
+          setKpis(null);
+          setLoading(false);
           return;
         }
 
-        // Find index of weekIso (or nearest earlier)
+        // locate target week index (or nearest earlier)
         let idx = series.findIndex((d) => d.week >= weekIso);
         if (idx === -1) idx = series.length - 1;
         if (series[idx]?.week > weekIso) idx = Math.max(0, idx - 1);
@@ -277,46 +323,53 @@ export function useKpis(
         const ten = series.slice(sliceStart, idx + 1);
         const last = ten[ten.length - 1];
 
-        // Align hesitancy to the same weeks we sliced for the KPIs
         const hesTen = ten.map((p) => {
           const v = hesByWeek.get(p.week);
           return Number.isFinite(v as number) ? (v as number) : NaN;
         });
         const hesLast = hesByWeek.get(last.week);
-        const hesVal = Number.isFinite(hesLast as number) ? (hesLast as number) : NaN;
+        const hesVal = Number.isFinite(hesLast as number)
+          ? (hesLast as number)
+          : NaN;
 
         const k: KpiCard[] = [
           {
             key: "vaccination_any_pct",
             label: "Vaccination (Any Dose) %",
             value: +(last.vaccination_any_pct ?? NaN),
-            sparkline: ten.map((p) => +(p.vaccination_any_pct ?? NaN)).map((v) => +v.toFixed(1)),
+            sparkline: ten
+              .map((p) => +(p.vaccination_any_pct ?? NaN))
+              .map((v) => +v.toFixed(1)),
             help: "Share of population with any vaccine dose.",
           },
           {
             key: "cases_per_100k",
             label: "Cases / 100k (weekly)",
             value: +(last.cases_per_100k ?? NaN),
-            sparkline: ten.map((p) => +(p.cases_per_100k ?? NaN)).map((v) => +v.toFixed(1)),
+            sparkline: ten
+              .map((p) => +(p.cases_per_100k ?? NaN))
+              .map((v) => +v.toFixed(1)),
           },
           {
             key: "deaths_per_100k",
             label: "Deaths / 100k (weekly)",
             value: +(last.deaths_per_100k ?? NaN),
-            sparkline: ten.map((p) => +(p.deaths_per_100k ?? NaN)).map((v) => +v.toFixed(2)),
+            sparkline: ten
+              .map((p) => +(p.deaths_per_100k ?? NaN))
+              .map((v) => +v.toFixed(2)),
           },
           {
             key: "hesitancy_pct",
             label: "Hesitancy % (CDC est.)",
             value: +(+hesVal).toFixed(1),
-            sparkline: hesTen.map((v) => +(Number.isFinite(v) ? v : NaN)).map((v) => +(+v).toFixed(1)),
+            sparkline: hesTen
+              .map((v) => +(Number.isFinite(v) ? v : NaN))
+              .map((v) => +(+v).toFixed(1)),
           },
         ];
 
-        if (mounted) {
-          setKpis(k);
-          setLoading(false);
-        }
+        setKpis(k);
+        setLoading(false);
       })
       .catch((e) => {
         if (!mounted) return;
@@ -324,22 +377,32 @@ export function useKpis(
         setLoading(false);
       });
 
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [weekIso, stateUsps]);
 
   return { kpis, loading, error: err };
 }
 
-/** KPIs for multiple states at a given week; returns map state_usps -> KpiCard[] */
+/**
+ * Multi-state KPIs (for compare view). Already used weekly_* fields before,
+ * but we keep them explicit here.
+ */
 export function useMultiKpis(
   weekIso: string,
   stateUspsList: string[]
-): { byState: Record<string, KpiCard[]> | null; loading: boolean; error?: string } {
-  const [byState, setByState] = useState<Record<string, KpiCard[]> | null>(null);
+): {
+  byState: Record<string, KpiCard[]> | null;
+  loading: boolean;
+  error?: string;
+} {
+  const [byState, setByState] = useState<Record<string, KpiCard[]> | null>(
+    null
+  );
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | undefined>();
 
-  // Stable key for dependency array
   const uspsKey = useMemo(
     () => stateUspsList.filter(Boolean).join(","),
     [stateUspsList]
@@ -356,8 +419,8 @@ export function useMultiKpis(
       return;
     }
 
-    loadFact()
-      .then((fact) => {
+    loadStateWeek()
+      .then((rows) => {
         if (!mounted) return;
 
         const result: Record<string, KpiCard[]> = {};
@@ -365,34 +428,35 @@ export function useMultiKpis(
         for (const usps of stateUspsList) {
           if (!usps || usps === "All states") continue;
 
-          const rows = fact
+          const stateRows = rows
             .filter((r) => r.state_usps === usps)
             .sort((a, b) => a.week_end_date.localeCompare(b.week_end_date));
 
-          if (!rows.length) continue;
+          if (!stateRows.length) continue;
 
-          // find index of last row with week_end_date <= weekIso (or last available)
-          let idx = rows.findIndex((r) => r.week_end_date >= weekIso);
-          if (idx === -1) idx = rows.length - 1;
-          if (rows[idx]?.week_end_date > weekIso) idx = Math.max(0, idx - 1);
+          let idx = stateRows.findIndex((r) => r.week_end_date >= weekIso);
+          if (idx === -1) idx = stateRows.length - 1;
+          if (stateRows[idx]?.week_end_date > weekIso) {
+            idx = Math.max(0, idx - 1);
+          }
 
           const sliceStart = Math.max(0, idx - 9);
-          const ten = rows.slice(sliceStart, idx + 1);
+          const ten = stateRows.slice(sliceStart, idx + 1);
           const last = ten[ten.length - 1];
           if (!last) continue;
 
-          const sparkVacc = ten.map((r) => toNum(r.vacc_pct_any_18p)).map((v) =>
-            Number.isFinite(v) ? +v.toFixed(1) : NaN
-          );
-          const sparkCases = ten.map((r) => toNum(r.cases_per_100k)).map((v) =>
-            Number.isFinite(v) ? +v.toFixed(1) : NaN
-          );
-          const sparkDeaths = ten.map((r) => toNum(r.deaths_per_100k)).map((v) =>
-            Number.isFinite(v) ? +v.toFixed(2) : NaN
-          );
-          const sparkHes = ten.map((r) => toNum(r.hesitancy_pct)).map((v) =>
-            Number.isFinite(v) ? +v.toFixed(1) : NaN
-          );
+          const sparkVacc = ten
+            .map((r) => toNum(r.vacc_pct_any_18p))
+            .map((v) => (Number.isFinite(v) ? +v.toFixed(1) : NaN));
+          const sparkCases = ten
+            .map((r) => toNum(r.weekly_cases_per_100k))
+            .map((v) => (Number.isFinite(v) ? +v.toFixed(1) : NaN));
+          const sparkDeaths = ten
+            .map((r) => toNum(r.weekly_deaths_per_100k))
+            .map((v) => (Number.isFinite(v) ? +v.toFixed(2) : NaN));
+          const sparkHes = ten
+            .map((r) => toNum(r.hesitancy_pct))
+            .map((v) => (Number.isFinite(v) ? +v.toFixed(1) : NaN));
 
           const hesVal = toNum(last.hesitancy_pct);
 
@@ -407,13 +471,13 @@ export function useMultiKpis(
             {
               key: "cases_per_100k",
               label: "Cases / 100k (weekly)",
-              value: toNum(last.cases_per_100k),
+              value: toNum(last.weekly_cases_per_100k),
               sparkline: sparkCases,
             },
             {
               key: "deaths_per_100k",
               label: "Deaths / 100k (weekly)",
-              value: toNum(last.deaths_per_100k),
+              value: toNum(last.weekly_deaths_per_100k),
               sparkline: sparkDeaths,
             },
             {
@@ -446,38 +510,31 @@ export function useMultiKpis(
   return { byState, loading, error: err };
 }
 
-/* ------------------------------------------------------------------
-   NEW: Per-state longitudinal hesitancy + coverage series
-   (for Hesitancy vs Uptake longitudinal paths chart).
-   ------------------------------------------------------------------ */
+// --- Longitudinal state series (for hesitancy vs uptake paths) ----
 
 export type StateSeriesPoint = {
-  week: string;                 // ISO yyyy-mm-dd
-  weekIndex: number;            // 1..N, shared across states
+  week: string;
+  weekIndex: number;
   vaccination_any_pct: number;
   vaccination_primary_pct: number;
   vaccination_booster_pct: number;
   hesitancy_pct: number;
 };
 
-/**
- * Returns a shared week axis and per-state series suitable for plotting
- * hesitancy vs coverage paths over time.
- */
 export function useStateSeries(
   stateUspsList: string[]
 ): {
-  weeks: string[]; // sorted ISO week_end_date values across the dataset
+  weeks: string[];
   byState: Record<string, StateSeriesPoint[]> | null;
   loading: boolean;
   error?: string;
 } {
   const [weeks, setWeeks] = useState<string[]>([]);
-  const [byState, setByState] = useState<Record<string, StateSeriesPoint[]> | null>(null);
+  const [byState, setByState] =
+    useState<Record<string, StateSeriesPoint[]> | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | undefined>();
 
-  // stable key for deps
   const uspsKey = useMemo(
     () => stateUspsList.filter(Boolean).join(","),
     [stateUspsList]
@@ -495,13 +552,12 @@ export function useStateSeries(
       return;
     }
 
-    loadFact()
-      .then((fact) => {
+    loadStateWeek()
+      .then((rows) => {
         if (!mounted) return;
 
-        // All unique weeks across the dataset, sorted ascending
         const weekSet = new Set<string>();
-        for (const r of fact) {
+        for (const r of rows) {
           if (r.week_end_date) weekSet.add(r.week_end_date);
         }
         const allWeeks = Array.from(weekSet).sort();
@@ -513,17 +569,17 @@ export function useStateSeries(
         for (const usps of stateUspsList) {
           if (!usps || usps === "All states") continue;
 
-          const rows = fact
+          const stateRows = rows
             .filter((r) => r.state_usps === usps)
             .sort((a, b) => a.week_end_date.localeCompare(b.week_end_date));
 
-          if (!rows.length) continue;
+          if (!stateRows.length) continue;
 
-          const series: StateSeriesPoint[] = rows.map((r) => {
-            const idx = weekIndex.get(r.week_end_date);
+          const series: StateSeriesPoint[] = stateRows.map((r) => {
+            const idx = weekIndex.get(r.week_end_date) ?? 0;
             return {
               week: r.week_end_date,
-              weekIndex: idx ?? 0,
+              weekIndex: idx,
               vaccination_any_pct: toNum(r.vacc_pct_any_18p),
               vaccination_primary_pct: toNum(r.vacc_pct_full_18p),
               vaccination_booster_pct: toNum(r.booster_pct_18p),

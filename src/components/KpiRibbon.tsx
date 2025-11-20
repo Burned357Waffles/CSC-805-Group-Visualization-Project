@@ -1,13 +1,11 @@
+// src/components/KpiRibbon.tsx
 import { memo, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui";
 import { cn } from "../lib/utils";
 import { useAppStore } from "../store/useAppStore";
 import { useKpis, useNationalTimeline } from "../lib/data";
+import { STATE_NAME_TO_USPS } from "../lib/usStates";
 
-/**
- * Spark bars — keep your original visuals exactly,
- * but be defensive about NaNs in the data.
- */
 function SparkBars({
   values,
   className,
@@ -27,11 +25,8 @@ function SparkBars({
 }) {
   const data = useMemo(() => {
     if (!values?.length) return [];
-
-    // Filter to finite numbers only; NaNs would otherwise break min/max
     const finite = values.filter((v) => Number.isFinite(v));
     if (!finite.length) return [];
-
     if (finite.length === barCount) return finite;
 
     const out: number[] = [];
@@ -100,17 +95,17 @@ const colorByKey: Record<string, string> = {
   hesitancy_pct: "text-violet-400",
 };
 
-function formatValue(k: string, val: number) {
+function formatValue(key: string, val: number) {
   if (!Number.isFinite(val)) return "—";
-  if (k.includes("vaccination") || k.includes("hesitancy"))
+  if (key.includes("vaccination") || key.includes("hesitancy")) {
     return `${val.toFixed(1)}%`;
+  }
   return val.toFixed(1);
 }
 
-// Minimal inline “delta pill” to match your green badge style
 function DeltaPill({ text }: { text: string }) {
   return (
-    <span className="ml-2 inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+    <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 whitespace-nowrap">
       <span className="mr-1">~</span>
       {text}
     </span>
@@ -119,47 +114,52 @@ function DeltaPill({ text }: { text: string }) {
 
 export default memo(function KpiRibbon() {
   const rangeEnd = useAppStore((s) => s.rangeEnd);
-  const selectedState = useAppStore((s) => s.state);
+  const selectedStateName = useAppStore((s) => s.state);
 
-  // Load real national timeline (for week label and national baselines)
   const { data: nat } = useNationalTimeline();
+  const natData = nat ?? [];
 
-  // Right-edge week label from the brush (timeline uses "2024-W##")
-  const latestWeekLabel = useMemo(() => {
-    const idx = Math.max(0, Math.min(rangeEnd - 1, (nat?.length ?? 1) - 1));
-    const pt = nat?.[idx];
-    return pt ? pt.week.replace("2024-W", "2024-Week ") : "—";
-  }, [nat, rangeEnd]);
+  // Week index -> ISO date string from national timeline
+  const { isoWeek, weekLabel } = useMemo(() => {
+    if (!natData.length) {
+      return { isoWeek: "", weekLabel: "—" };
+    }
+    const idx = Math.max(0, Math.min(rangeEnd - 1, natData.length - 1));
+    const pt = natData[idx];
+    return {
+      isoWeek: pt.week,      // already ISO yyyy-mm-dd
+      weekLabel: pt.week,    // label as-is for now
+    };
+  }, [natData, rangeEnd]);
 
-  // Pick ISO week for KPI hook and load real KPIs
-  const isoWeek: string = useMemo(() => {
-    const idx = Math.max(0, Math.min(rangeEnd - 1, (nat?.length ?? 1) - 1));
-    return nat?.[idx]?.week ?? "";
-  }, [nat, rangeEnd]);
-  const { kpis } = useKpis(isoWeek);
+  // Map UI state label ("Arkansas") -> USPS ("AR") for the data hook
+  const stateUsps: string | undefined = useMemo(() => {
+    if (!selectedStateName || selectedStateName === "All states") return undefined;
+    const code = (STATE_NAME_TO_USPS as Record<string, string>)[selectedStateName];
+    return code || undefined;
+  }, [selectedStateName]);
 
-  // Helpers to fetch the value for each KPI depending on selection.
+  const { kpis, loading, error } = useKpis(isoWeek, stateUsps);
+
   const getValue = (key: string): number => {
     const card = (kpis ?? []).find((k) => k.key === key);
     return card ? Number(card.value) : NaN;
   };
 
-  // Delta logic:
-  // - If a state is selected: state value minus NATIONAL value at the selected week (“vs US”).
-  // - Else (national): week-over-week delta from national timeline.
+  // Delta: vs US if a state is selected; else week-over-week national change
   const deltaFor = (key: string) => {
+    if (!natData.length) return null;
+
     const isPct = key.includes("vaccination") || key.includes("hesitancy");
     const fmt = (v: number) =>
       isPct
         ? `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`
-        : `${v >= 0 ? "+" : ""}${v.toFixed(
-            key === "deaths_per_100k" ? 2 : 1
-          )}`;
+        : `${v >= 0 ? "+" : ""}${v.toFixed(key === "deaths_per_100k" ? 2 : 1)}`;
 
-    const idxNow = Math.max(0, Math.min(rangeEnd - 1, (nat?.length ?? 1) - 1));
-    const now = nat?.[idxNow];
+    const idxNow = Math.max(0, Math.min(rangeEnd - 1, natData.length - 1));
+    const now = natData[idxNow];
 
-    if (selectedState && selectedState !== "All states") {
+    if (stateUsps) {
       const val = getValue(key);
       if (!now || !Number.isFinite(val)) return null;
 
@@ -176,7 +176,7 @@ export default memo(function KpiRibbon() {
       return fmt(val - us);
     } else {
       const idxPrev = Math.max(0, idxNow - 1);
-      const prev = nat?.[idxPrev];
+      const prev = natData[idxPrev];
       if (!prev || !now) return null;
 
       const a =
@@ -201,9 +201,35 @@ export default memo(function KpiRibbon() {
     }
   };
 
+  // Loading / error fallbacks
+  if (!kpis && loading) {
+    const label = selectedStateName === "All states" ? "US" : selectedStateName;
+    return (
+      <div className="rounded-2xl border bg-white px-4 py-6 text-sm text-slate-600 shadow-sm">
+        Loading KPIs for {label}…
+      </div>
+    );
+  }
+
+  if (!kpis && error) {
+    return (
+      <div className="rounded-2xl border bg-white px-4 py-6 text-sm text-red-600 shadow-sm">
+        Failed to load KPIs: {error}
+      </div>
+    );
+  }
+
+  if (!kpis || !kpis.length) {
+    return (
+      <div className="rounded-2xl border bg-white px-4 py-6 text-sm text-slate-600 shadow-sm">
+        No KPI data available for this selection.
+      </div>
+    );
+  }
+
   return (
     <div className={cn("grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4")}>
-      {(kpis ?? []).map((kpi) => {
+      {kpis.map((kpi) => {
         const tint = colorByKey[kpi.key] ?? "text-slate-400";
         const value = getValue(kpi.key);
         const display = formatValue(kpi.key, Number(value));
@@ -212,39 +238,41 @@ export default memo(function KpiRibbon() {
         return (
           <Card
             key={kpi.key}
-            className="rounded-2xl shadow-sm border bg-white"
+            className="rounded-2xl border bg-white shadow-sm"
             aria-label={kpi.label}
           >
-            <CardHeader className="pb-1 px-4 pt-3">
+            <CardHeader className="px-4 pt-3 pb-1">
               <CardTitle className="text-sm font-medium text-slate-600">
                 {kpi.label}
               </CardTitle>
             </CardHeader>
 
-            <CardContent className="pt-0 px-4 pb-2">
-              {/* Big numeric value + (optional) green delta pill */}
-              <div className="text-[28px] font-semibold tracking-tight text-slate-900">
-                {display}
-                {(kpi.key === "cases_per_100k" ||
-                  kpi.key === "deaths_per_100k") && (
-                  <span className="ml-1 text-base text-slate-500">/100k</span>
-                )}
+            <CardContent className="px-4 pt-0 pb-2">
+              {/* Number + /100k + delta pill, all baseline-aligned */}
+              <div className="flex items-baseline gap-2">
+                <div className="text-[22px] md:text-[24px] font-semibold tracking-tight text-slate-900 whitespace-nowrap">
+                  {display}
+                  {(kpi.key === "cases_per_100k" ||
+                    kpi.key === "deaths_per_100k") && (
+                    <span className="ml-1 text-sm text-slate-500">/100k</span>
+                  )}
+                </div>
                 {deltaText && <DeltaPill text={deltaText} />}
               </div>
 
-              {/* Spark bars */}
               <div className="mt-2">
                 <SparkBars values={kpi.sparkline} className={tint} />
               </div>
 
-              {/* Footer */}
               <div className="mt-1 text-[11px] text-slate-500">
                 {kpi.key === "hesitancy_pct" ? (
                   <span>Latest estimate</span>
                 ) : (
                   <span>
-                    {selectedState !== "All states" ? `${selectedState} — ` : ""}
-                    Week ending {latestWeekLabel}
+                    {selectedStateName && selectedStateName !== "All states"
+                      ? `${selectedStateName} — `
+                      : ""}
+                    Week ending {weekLabel}
                   </span>
                 )}
               </div>
