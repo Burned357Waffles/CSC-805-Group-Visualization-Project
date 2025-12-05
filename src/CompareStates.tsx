@@ -519,7 +519,7 @@ export default function CompareStates() {
             ) : (
               <>
                 {/* KPI strip – now backed by real CSV KPIs */}
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   {chosen.map((stateName) => {
                     const usps = STATE_NAME_TO_USPS[stateName];
                     const cards = usps && byState ? byState[usps] : undefined;

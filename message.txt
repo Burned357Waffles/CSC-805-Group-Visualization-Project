@@ -1,0 +1,136 @@
+Description of the 3 remaining pages:
+
+State Profile page
+
+The State Profile page is a deep dive for one state. Conceptually, it uses the same data columns as the overview, but always filtered to:
+
+state_usps == selectedState, and
+
+whichever week/time window the page’s controls specify.
+
+Key pieces:
+
+State-level KPI ribbon – same as Overview, but no national mode.
+
+State vaccination coverage time series – three lines from:
+
+vacc_pct_any_18p, vacc_pct_full_18p, booster_pct_18p.
+
+State cases & deaths time series:
+
+weekly_cases_per_100k (upper chart),
+
+weekly_deaths_per_100k (lower chart).
+
+Lagged outcome scatter:
+
+X: coverage (vacc_pct_any_18p or vacc_pct_full_18p).
+
+Y: lagged weekly outcomes (weekly_deaths_per_100k or weekly_cases_per_100k at t+L).
+
+Mini hesitancy context panel:
+
+hesitancy_pct for that state,
+
+final-week coverage (e.g., vacc_pct_any_18p at last week_end_date),
+
+derived “reachable coverage” ≈ coverage_final / (100 - hesitancy_pct).
+
+All of these are pure re-uses of the same columns; there are no new data sources.
+
+Compare States page
+
+This page overlays multiple states to compare them.
+
+Main elements and columns:
+
+KPI area:
+
+One full ribbon for a “primary” state or US, using the same columns and logic as other ribbons (from state_week.csv or nat_week.csv).
+
+A compact table for a handful of selected states:
+
+vacc_pct_any_18p
+
+weekly_cases_per_100k
+
+weekly_deaths_per_100k
+
+hesitancy_pct
+at the chosen week_end_date.
+
+Multi-state vaccination time series:
+
+For each selected state: line of vacc_pct_any_18p over time.
+
+Multi-state cases time series:
+
+For each selected state: line of weekly_cases_per_100k over time.
+
+Multi-state deaths time series:
+
+For each selected state: line of weekly_deaths_per_100k over time.
+
+Vaccination vs outcome (lagged) bubble chart:
+
+For week t (in the chosen range) and lag L:
+
+X: coverage (vacc_pct_any_18p or vacc_pct_full_18p) at week t.
+
+Y: outcome (either weekly_cases_per_100k or weekly_deaths_per_100k) at week (t + L).
+
+Bubble size or color optionally tied to hesitancy_pct or population.
+
+So again: no new columns, just different combinations and lags of the same ones.
+
+Hesitancy vs Uptake page
+
+This page focuses on relationship between hesitancy and vaccination coverage.
+
+Key visuals and their data:
+
+Scatter: hesitancy vs coverage (single week)
+
+For the chosen week t:
+
+X: hesitancy_pct (fixed baseline, from state_week.csv).
+
+Y: coverage at that week:
+
+vacc_pct_any_18p or vacc_pct_full_18p depending on a dropdown.
+
+Optional:
+
+Ghost point at final coverage (vacc_pct_* at last week) for each state.
+
+Longitudinal paths (start vs end)
+
+For each selected state:
+
+Start point: (hesitancy_pct, coverage at first week).
+
+End point: (hesitancy_pct, coverage at end week defined by the Week slider).
+
+Coverage always comes from vacc_pct_any_18p or vacc_pct_full_18p.
+
+Filter rail on this page controls:
+
+Which states to include,
+
+Week t,
+
+Which coverage metric (vacc_pct_any_18p or vacc_pct_full_18p),
+
+Whether bubble area is scaled by population,
+
+Whether to show labels.
+
+Everything still uses only:
+
+hesitancy_pct,
+
+vacc_pct_any_18p,
+
+vacc_pct_full_18p,
+
+population (for bubble size).
