@@ -5,7 +5,7 @@ import { feature } from "topojson-client";
 import { useAppStore } from "../store/useAppStore";
 import type { OutcomeKey, StateLatest } from "../lib/types";
 import { useStateLatest, useNationalTimeline } from "../lib/data";
-import { FIPS_TO_STATE_CODE, STATE_CODE_TO_NAME, USPS_TO_FIPS } from "../lib/usStates";
+import { FIPS_TO_STATE_CODE, STATE_CODE_TO_NAME, USPS_TO_FIPS, STATE_NAME_TO_USPS } from "../lib/usStates";
 
 type AnyTopo = any;
 type Props = { outcome: OutcomeKey; width?: number; height?: number };
@@ -126,21 +126,40 @@ export default function UsChoropleth({
       .data(states, (d: any) => d.id);
     paths.exit().remove();
 
+    // Convert state name to USPS code for comparison (needed for enter selection)
+    const selectedUspsForEnter = stateCode !== "All states" ? STATE_NAME_TO_USPS[stateCode] : null;
+
     const enter = paths
       .enter()
       .append("path")
       .attr("class", "state")
       .attr("tabindex", 0)
-      .attr("stroke", "#fff")
-      .attr("stroke-width", 0.5)
+      .attr("stroke", (d: any) => {
+        const fips = String(d.id).padStart(2, "0");
+        const code = FIPS_TO_STATE_CODE[fips];
+        return selectedUspsForEnter && code === selectedUspsForEnter ? "#1e293b" : "#fff";
+      })
+      .attr("stroke-width", (d: any) => {
+        const fips = String(d.id).padStart(2, "0");
+        const code = FIPS_TO_STATE_CODE[fips];
+        return selectedUspsForEnter && code === selectedUspsForEnter ? 3 : 0.5;
+      })
       .on("mouseenter", (e, d: any) => handleHover(d, e))
       .on("mousemove", (e, d: any) => handleHover(d, e))
       .on("mouseleave", () => setTt((t) => ({ ...t, show: false })))
       .on("click", (_e, d: any) => {
         const fips = String(d.id).padStart(2, "0");
         const code = FIPS_TO_STATE_CODE[fips];
-        if (code) setStateCode(stateCode === code ? "All states" : code);
+        if (code) {
+          const stateName = STATE_CODE_TO_NAME[code];
+          // Toggle: if clicking the same state, reset to "All states"
+          const newState = stateName === stateCode ? "All states" : stateName;
+          setStateCode(newState);
+        }
       });
+
+    // Convert state name to USPS code for comparison
+    const selectedUsps = stateCode !== "All states" ? STATE_NAME_TO_USPS[stateCode] : null;
 
     paths
       .merge(enter as any)
@@ -150,15 +169,23 @@ export default function UsChoropleth({
         const dta = byFips.get(fips);
         return dta ? color(dta[outcome] as number) : d3.interpolateGreys(0.1);
       })
+      .attr("stroke", (d: any) => {
+        const fips = String(d.id).padStart(2, "0");
+        const code = FIPS_TO_STATE_CODE[fips];
+        // Use a prominent dark stroke for selected state, white for others
+        return selectedUsps && code === selectedUsps ? "#1e293b" : "#fff";
+      })
       .attr("stroke-width", (d: any) => {
         const fips = String(d.id).padStart(2, "0");
         const code = FIPS_TO_STATE_CODE[fips];
-        return stateCode !== "All states" && code === stateCode ? 1.5 : 0.5;
+        // Much thicker stroke for selected state
+        return selectedUsps && code === selectedUsps ? 3 : 0.5;
       })
       .attr("opacity", (d: any) => {
         const fips = String(d.id).padStart(2, "0");
         const code = FIPS_TO_STATE_CODE[fips];
-        return stateCode !== "All states" && code !== stateCode ? 0.55 : 1;
+        // Selected state at full opacity, others more dimmed when a state is selected
+        return selectedUsps && code !== selectedUsps ? 0.35 : 1;
       });
 
     function handleHover(d: any, ev: any) {

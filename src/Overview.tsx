@@ -59,8 +59,7 @@ export default function Overview() {
               <div className="p-4">
                 <UsChoropleth outcome={outcome} height={420} />
                 <p className="mt-2 text-xs text-slate-500">
-                  Hover for values. (AK/HI/PR insets and a richer legend can be
-                  added next.)
+                  Hover for values
                 </p>
               </div>
             </section>
