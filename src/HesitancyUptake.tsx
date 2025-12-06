@@ -809,18 +809,20 @@ export default function HesitancyUptake() {
                       content={({ active, payload }) => {
                         if (!active || !payload || !payload.length) return null;
                         
-                        // Get the first payload entry (the point being hovered)
+                        // With a single Scatter component, payload[0].payload contains the data point
                         const firstEntry = payload[0];
-                        const dataPoint = firstEntry?.payload as {
+                        if (!firstEntry || !firstEntry.payload) return null;
+                        
+                        const dataPoint = firstEntry.payload as {
                           state: StateName;
                           x: number;
                           y: number;
                           selected: boolean;
                           color: string;
                           pop: number;
-                        } | undefined;
+                        };
                         
-                        if (!dataPoint) return null;
+                        if (!dataPoint || !dataPoint.state) return null;
                         
                         return (
                           <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow">
@@ -853,64 +855,54 @@ export default function HesitancyUptake() {
 
                     {hasSelection && (
                       <>
-                        {/* context (unselected) faint */}
+                        {/* Single Scatter component for all points - handles selected/unselected styling */}
                         <Scatter
-                          name="Context"
-                          data={scatterPoints.filter((d) => !d.selected)}
-                          fill="#94a3b8"
-                          shape={(props: any) => {
-                            const { cx, cy, payload } = props;
-                            const r = scaleByPop
-                              ? Math.max(
-                                  3,
-                                  Math.log10((payload.pop || 1) / 1e5)
-                                )
-                              : 4;
-                            return (
-                              <circle
-                                cx={cx}
-                                cy={cy}
-                                r={r}
-                                fill="#94a3b8"
-                                opacity={0.35}
-                              />
-                            );
-                          }}
-                        />
-                        {/* selected vivid with optional labels */}
-                        <Scatter
-                          name="Selected"
-                          data={scatterPoints.filter((d) => d.selected)}
+                          name="States"
+                          data={scatterPoints}
                           fill="#222"
                           shape={(props: any) => {
                             const { cx, cy, payload } = props;
+                            const isSelected = payload.selected;
                             const r = scaleByPop
                               ? Math.max(
-                                  5,
-                                  Math.log10((payload.pop || 1) / 1e5) + 1.5
+                                  isSelected ? 5 : 3,
+                                  Math.log10((payload.pop || 1) / 1e5) + (isSelected ? 1.5 : 0)
                                 )
-                              : 6;
-                            return (
-                              <>
+                              : (isSelected ? 6 : 4);
+                            
+                            if (isSelected) {
+                              return (
+                                <>
+                                  <circle
+                                    cx={cx}
+                                    cy={cy}
+                                    r={r}
+                                    fill={payload.color}
+                                    filter="url(#halo)"
+                                  />
+                                  {labelSelected && (
+                                    <text
+                                      x={cx + r + 4}
+                                      y={cy + 4}
+                                      fontSize={11}
+                                      fill="#334155"
+                                    >
+                                      {payload.state}
+                                    </text>
+                                  )}
+                                </>
+                              );
+                            } else {
+                              return (
                                 <circle
                                   cx={cx}
                                   cy={cy}
                                   r={r}
-                                  fill={payload.color}
-                                  filter="url(#halo)"
+                                  fill="#94a3b8"
+                                  opacity={0.35}
                                 />
-                                {labelSelected && (
-                                  <text
-                                    x={cx + r + 4}
-                                    y={cy + 4}
-                                    fontSize={11}
-                                    fill="#334155"
-                                  >
-                                    {payload.state}
-                                  </text>
-                                )}
-                              </>
-                            );
+                              );
+                            }
                           }}
                         />
                         {/* OLS trend line */}
@@ -992,9 +984,15 @@ export default function HesitancyUptake() {
                       content={({ active, payload }) => {
                         if (!active || !payload || !payload.length) return null;
                         
-                        // Get the first payload entry (the line being hovered)
+                        // In Recharts LineChart, each Line component creates a payload entry
+                        // payload[0].name contains the Line's name prop (the state name)
+                        // payload[0].payload contains the data point
+                        // When multiple lines are at the same x position, payload may have multiple entries
+                        // We want to show the one that's actually being hovered
                         const firstEntry = payload[0];
-                        const dataPoint = firstEntry?.payload as { 
+                        if (!firstEntry) return null;
+                        
+                        const dataPoint = firstEntry.payload as { 
                           x: number; 
                           y: number; 
                           w: number 
@@ -1003,9 +1001,9 @@ export default function HesitancyUptake() {
                         if (!dataPoint) return null;
                         
                         // Get the state name from the line's name prop
-                        const stateName = firstEntry?.name || "";
-
-                        console.log("TOOLTIP DATAPOINT:", dataPoint);
+                        const stateName = firstEntry.name as string || "";
+                        
+                        if (!stateName) return null;
                         
                         return (
                           <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow">
@@ -1020,14 +1018,14 @@ export default function HesitancyUptake() {
                                     : "N/A"}
                                 </span>
                               </div>
-                            </div>
-                            <div className="text-slate-700">
+                              <div className="text-slate-700">
                                 Coverage %: <span className="font-medium">
                                   {Number.isFinite(dataPoint.y) 
                                     ? Number(dataPoint.y).toFixed(1) 
                                     : "N/A"}
                                 </span>
                               </div>
+                            </div>
                           </div>
                         );
                       }}
