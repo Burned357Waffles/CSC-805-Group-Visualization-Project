@@ -519,6 +519,8 @@ export type StateSeriesPoint = {
   vaccination_primary_pct: number;
   vaccination_booster_pct: number;
   hesitancy_pct: number;
+  cases_per_100k: number;
+  deaths_per_100k: number;
 };
 
 export function useStateSeries(
@@ -584,9 +586,11 @@ export function useStateSeries(
               vaccination_primary_pct: toNum(r.vacc_pct_full_18p),
               vaccination_booster_pct: toNum(r.booster_pct_18p),
               hesitancy_pct: toNum(r.hesitancy_pct),
+              cases_per_100k: toNum(r.weekly_cases_per_100k),
+              deaths_per_100k: toNum(r.weekly_deaths_per_100k),
             };
           });
-
+      
           result[usps] = series;
         }
 

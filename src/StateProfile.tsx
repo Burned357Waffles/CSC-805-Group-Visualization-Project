@@ -12,27 +12,27 @@ import {
   Scatter,
 } from "recharts";
 import { US_STATES_50, STATE_NAME_TO_USPS, State50 } from "./lib/usStates";
-import { MOCK_NATIONAL_TIMELINE } from "./lib/mock";
 import { cn } from "./lib/utils";
 import { Sparkline } from "./components/ui/chart"; // tiny bars like Overview
-import { useKpis, useNationalTimeline } from "./lib/data";
+import { useKpis, useNationalTimeline, useStateSeries } from "./lib/data";
 import type { KpiCard as KpiDatum } from "./lib/types";
+import type { StateSeriesPoint } from "./lib/data";
 
 /* -------------------------------------------------------------
    Helpers: synthesize per-state series from national mock data
    (still used for the charts; KPIs now come from real data)
    ------------------------------------------------------------- */
 
-type SeriesPoint = {
-  weekLabel: string;              // e.g., "W01"
-  weekIndex: number;              // 1..52
-  cases_per_100k: number;
-  deaths_per_100k: number;
-  vaccination_any_pct: number;
-  vaccination_primary_pct: number;
-  vaccination_booster_pct: number;
-  hesitancy_pct: number;
-};
+   type SeriesPoint = {
+    weekLabel: string;              // e.g., "W01"
+    weekIndex: number;              // 1..N
+    cases_per_100k: number;
+    deaths_per_100k: number;
+    vaccination_any_pct: number;
+    vaccination_primary_pct: number;
+    vaccination_booster_pct: number;
+    hesitancy_pct: number;
+  };
 
 function seededNumber(seed: number, min = 0.9, max = 1.1) {
   const x = Math.sin(seed * 12.9898) * 43758.5453;
@@ -130,21 +130,41 @@ function InsideLeftYAxisLabel(props: {
    Component
    ------------------------------------------------------------- */
 
-export default function StateProfile() {
-  const [selectedState, setSelectedState] = useState<State50>("Alabama");
-  const [outcome, setOutcome] = useState<"cases" | "deaths">("cases");
-  const [week, setWeek] = useState<number>(52);
-  const [smoothing, setSmoothing] = useState<"off" | "ma">("off");
-  const [lag, setLag] = useState<number>(0);
-
-  // Real national timeline (for ISO week mapping)
-  const { data: nat } = useNationalTimeline();
-
-  // Synthetic per-state series still power the charts for now
-  const series = useMemo(() => genStateSeries(selectedState), [selectedState]);
-
-  // Map full state name -> USPS to feed the KPI hook
-  const stateUsps = STATE_NAME_TO_USPS[selectedState] ?? undefined;
+   export default function StateProfile() {
+    const [selectedState, setSelectedState] = useState<State50>("Alabama");
+    const [outcome, setOutcome] = useState<"cases" | "deaths">("cases");
+    const [week, setWeek] = useState<number>(52);
+    const [smoothing, setSmoothing] = useState<"off" | "ma">("off");
+    const [lag, setLag] = useState<number>(0);
+  
+    // Real national timeline (for ISO week mapping)
+    const { data: nat } = useNationalTimeline();
+  
+    // Map full state name -> USPS (for KPIs + series hook)
+    const stateUsps = STATE_NAME_TO_USPS[selectedState] ?? undefined;
+  
+    // Real per-state weekly series from state_week data
+    const { byState: seriesByUsps } = useStateSeries(
+      stateUsps ? [stateUsps] : []
+    );
+  
+    const series = useMemo<SeriesPoint[]>(() => {
+      if (!stateUsps || !seriesByUsps) return [];
+      const src = seriesByUsps[stateUsps];
+      if (!src) return [];
+  
+      return src.map((p: StateSeriesPoint) => ({
+        weekLabel: toWeekLabel(p.weekIndex),
+        weekIndex: p.weekIndex,
+        cases_per_100k: p.cases_per_100k,
+        deaths_per_100k: p.deaths_per_100k,
+        vaccination_any_pct: p.vaccination_any_pct,
+        vaccination_primary_pct: p.vaccination_primary_pct,
+        vaccination_booster_pct: p.vaccination_booster_pct,
+        hesitancy_pct: p.hesitancy_pct,
+      }));
+    }, [stateUsps, seriesByUsps]);
+  
 
   // Clamp the chosen week to the available national weeks
   const natLength = nat?.length ?? 52;

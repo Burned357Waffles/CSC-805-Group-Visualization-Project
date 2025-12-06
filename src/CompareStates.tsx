@@ -10,71 +10,32 @@ import {
   Legend,
   ScatterChart,
   Scatter,
-  ReferenceLine,        // ← added
-  ReferenceDot,         // ← added
+  ReferenceLine,
+  ReferenceDot,
 } from "recharts";
-import { MOCK_NATIONAL_TIMELINE } from "./lib/mock";
 import { US_STATES_50, STATE_NAME_TO_USPS } from "./lib/usStates";
 import type { State50 } from "./lib/usStates";
 import { cn } from "./lib/utils";
 import KpiCard from "./components/KpiCard";
-import { useMultiKpis, useNationalTimeline } from "./lib/data";
+import { useMultiKpis, useNationalTimeline, useStateSeries } from "./lib/data";
+import type { StateSeriesPoint } from "./lib/data";
 import type { KpiCard as KpiDatum } from "./lib/types";
 
 /* ------------------------------------------------------------------ */
 /* Helpers – generate per-state weekly series from the national mock  */
 /* ------------------------------------------------------------------ */
 
+// Per-state series point shape for this view (real data)
 type SeriesPoint = {
-  week: number; // 1..52
-  weekLabel: string; // "W01"…"W52"
+  week: number;       // 1..N (index)
+  weekLabel: string;  // "W01"…"W52"
   vaccination_any_pct: number;
   cases_per_100k: number;
   deaths_per_100k: number;
   hesitancy_pct: number;
 };
 
-const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-const round = (n: number, d = 1) => Math.round(n * Math.pow(10, d)) / Math.pow(10, d);
 const toW = (i: number) => `W${String(i).padStart(2, "0")}`;
-
-// deterministic pseudo-random (seeded by state name)
-function jitter(seed: number, min: number, max: number) {
-  const x = Math.sin(seed * 12.9898) * 43758.5453;
-  const f = x - Math.floor(x);
-  return min + (max - min) * f;
-}
-
-function genStateSeries(stateName: string): SeriesPoint[] {
-  const seed = stateName.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
-
-  const startH = 34 * jitter(seed + 2, 0.9, 1.05);
-  const endH = 11 * jitter(seed + 5, 0.9, 1.1);
-
-  return MOCK_NATIONAL_TIMELINE.map((row, i) => {
-    const w = i + 1;
-
-    // subtly vary outcomes per state
-    const caseMul = jitter(seed + i * 1.7, 0.85, 1.2);
-    const deathMul = jitter(seed + i * 2.1, 0.8, 1.25);
-    const vShift = jitter(seed + i * 0.6, -3.0, 3.0);
-
-    const any = clamp(row.vaccination_any_pct + vShift, 0, 100);
-
-    // hesitancy declines over the year with a tiny wobble
-    const t = i / (MOCK_NATIONAL_TIMELINE.length - 1);
-    const hes = clamp(startH + (endH - startH) * t + Math.sin(i * 0.25) * 0.7, 0, 100);
-
-    return {
-      week: w,
-      weekLabel: toW(w),
-      vaccination_any_pct: round(any, 1),
-      cases_per_100k: round(row.cases_per_100k * caseMul, 1),
-      deaths_per_100k: round(row.deaths_per_100k * deathMul, 2),
-      hesitancy_pct: round(hes, 1),
-    };
-  });
-}
 
 /* ------------------------------------------------------------------ */
 /* Small UI bits                                                       */
@@ -233,12 +194,44 @@ export default function CompareStates() {
     setPicker("");
   };
 
+  const stateUspsList = useMemo(
+    () =>
+      chosen
+        .map((name: State50) => STATE_NAME_TO_USPS[name])
+        .filter((c): c is string => Boolean(c)),
+    [chosen]
+  );  
+
+  
+  
+const { byState: seriesByUsps } = useStateSeries(stateUspsList);
+
   // series for each chosen state (synthetic, for charts only)
   const seriesByState = useMemo(() => {
     const m = new Map<string, SeriesPoint[]>();
-    chosen.forEach((s) => m.set(s, genStateSeries(s)));
+    if (!seriesByUsps) return m;
+  
+    chosen.forEach((stateName) => {
+      const usps = STATE_NAME_TO_USPS[stateName];
+      if (!usps) return;
+  
+      const series = seriesByUsps[usps];
+      if (!series || !series.length) return;
+  
+      const points: SeriesPoint[] = series.map((row: StateSeriesPoint) => ({
+        week: row.weekIndex,
+        weekLabel: toW(row.weekIndex),
+        vaccination_any_pct: row.vaccination_any_pct,
+        cases_per_100k: row.cases_per_100k,
+        deaths_per_100k: row.deaths_per_100k,
+        hesitancy_pct: row.hesitancy_pct,
+      }));
+  
+      m.set(stateName, points);
+    });
+  
     return m;
-  }, [chosen]);
+  }, [chosen, seriesByUsps]);  
 
   // clipped series up to the animated week (for emphasis overlays)
   const clipped = useMemo(() => {
@@ -275,14 +268,6 @@ export default function CompareStates() {
 
   const weekHint = weekIso ? `Week ending ${weekIso}` : undefined;
 
-  const stateUspsList = useMemo(
-    () =>
-      chosen
-        .map((name: State50) => STATE_NAME_TO_USPS[name])
-        .filter((c): c is string => Boolean(c)),
-    [chosen]
-  );
-
   const { byState, loading: kpiLoading } = useMultiKpis(weekIso, stateUspsList);
 
   // bubble data (PATCH: use animEnd, still driven by synthetic series)
@@ -294,18 +279,30 @@ export default function CompareStates() {
       z: number; // hesitancy %
       color: string;
     }[] = [];
+  
     chosen.forEach((s) => {
-      const arr = seriesByState.get(s)!;
-      const endW = Math.max(1, Math.min(52, animEnd)) - 1;
-      const idxX = endW; // vaccination at t
-      const idxY = Math.min(51, endW + lag); // outcome at t + lag
-      const x = arr[idxX].vaccination_any_pct;
-      const y = outcome === "cases" ? arr[idxY].cases_per_100k : arr[idxY].deaths_per_100k;
-      const z = arr[idxX].hesitancy_pct;
+      const arr = seriesByState.get(s);
+      if (!arr || !arr.length) return; // skip if data not ready
+  
+      // clamp to the actual series length
+      const cappedEnd = Math.max(1, Math.min(arr.length, animEnd));
+      const endIndex = cappedEnd - 1;
+  
+      const idxX = endIndex;
+      const idxY = Math.min(arr.length - 1, endIndex + lag);
+  
+      const x = arr[idxX]?.vaccination_any_pct ?? 0;
+      const y =
+        outcome === "cases"
+          ? arr[idxY]?.cases_per_100k ?? 0
+          : arr[idxY]?.deaths_per_100k ?? 0;
+      const z = arr[idxX]?.hesitancy_pct ?? 0;
+  
       points.push({ state: s, x, y, z, color: stateColor(s) });
     });
+  
     return points;
-  }, [chosen, seriesByState, animEnd, lag, outcome]);
+  }, [chosen, seriesByState, animEnd, lag, outcome]);  
 
   // custom tooltip for line charts: drop helper layers (empty name)
   const renderLineTooltip = (props: any) => {
