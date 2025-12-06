@@ -51,5 +51,10 @@ export const FIPS_TO_STATE_CODE: Record<string, string> = {
 // Reverse: USPS code -> full state name (alias for clarity)
 export const STATE_CODE_TO_NAME = USPS_TO_STATE_NAME;
 
+// Reverse: USPS code -> FIPS code (for choropleth mapping)
+export const USPS_TO_FIPS: Record<string, string> = Object.fromEntries(
+  Object.entries(FIPS_TO_STATE_CODE).map(([fips, usps]) => [usps, fips])
+);
+
 // Optional alias for dropdowns (used earlier by FilterRail)
 export const US_STATE_OPTIONS = US_STATES_50;

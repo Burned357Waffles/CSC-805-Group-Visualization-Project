@@ -4,8 +4,8 @@ import * as d3 from "d3";
 import { feature } from "topojson-client";
 import { useAppStore } from "../store/useAppStore";
 import type { OutcomeKey, StateLatest } from "../lib/types";
-import { useStateLatest } from "../lib/data";
-import { FIPS_TO_STATE_CODE, STATE_CODE_TO_NAME } from "../lib/usStates";
+import { useStateLatest, useNationalTimeline } from "../lib/data";
+import { FIPS_TO_STATE_CODE, STATE_CODE_TO_NAME, USPS_TO_FIPS } from "../lib/usStates";
 
 type AnyTopo = any;
 type Props = { outcome: OutcomeKey; width?: number; height?: number };
@@ -28,27 +28,30 @@ export default function UsChoropleth({
   const stateCode = useAppStore((s) => s.state);
   const setStateCode = useAppStore((s) => s.setState);
 
-  // Whatever is stored in s.week (index or ISO string), we just
-  // ensure we pass a string to useStateLatest to satisfy TS.
-  const weekValue = useAppStore((s) => s.week);
-  const weekIso = String(weekValue);
+  // Convert week index to ISO string using national timeline
+  const weekIndex = useAppStore((s) => s.week);
+  const { data: nat } = useNationalTimeline();
+  
+  // Get the ISO week string from the national timeline
+  const weekIso = useMemo(() => {
+    if (!nat || !nat.length) return "";
+    const idx = Math.max(0, Math.min(weekIndex - 1, nat.length - 1));
+    return nat[idx]?.week || "";
+  }, [nat, weekIndex]);
 
   // Load state-level data for the selected week
   const { data: latest } = useStateLatest(weekIso);
 
-  // Normalize FIPS or USPS codes to match TopoJSON (numeric IDs like "06")
+  // Normalize USPS codes to FIPS codes to match TopoJSON (numeric IDs like "06")
   const byFips = useMemo(() => {
     const map = new Map<string, StateLatest>();
     if (!latest) return map;
 
     for (const d of latest) {
-      // Convert USPS (like "CA") to numeric FIPS ("06") if needed
-      const fips =
-        d.fips.length === 2 && /^[A-Z]{2}$/.test(d.fips)
-          ? Object.entries(FIPS_TO_STATE_CODE).find(
-              ([, code]) => code === d.fips
-            )?.[0] ?? d.fips
-          : String(d.fips).padStart(2, "0");
+      // d.fips is actually a USPS code (like "CA") from useStateLatest
+      // Convert it to FIPS code (like "06") for matching with TopoJSON
+      const usps = d.fips; // This is actually USPS, not FIPS
+      const fips = USPS_TO_FIPS[usps] || String(d.fips).padStart(2, "0");
       map.set(fips, d);
     }
     return map;
