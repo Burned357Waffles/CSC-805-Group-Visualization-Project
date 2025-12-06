@@ -806,20 +806,49 @@ export default function HesitancyUptake() {
                       label={yLabelCentered("Vaccination Coverage (%)")}
                     />
                     <Tooltip
-                      formatter={(val: any, name: any) => {
-                        if (name === "x")
-                          return [
-                            `Hesitancy %: ${Number(val).toFixed(1)}`,
-                            "",
-                          ];
-                        if (name === "y")
-                          return [
-                            `Coverage %: ${Number(val).toFixed(1)}`,
-                            "",
-                          ];
-                        return [val, ""];
+                      content={({ active, payload }) => {
+                        if (!active || !payload || !payload.length) return null;
+                        
+                        // Get the first payload entry (the point being hovered)
+                        const firstEntry = payload[0];
+                        const dataPoint = firstEntry?.payload as {
+                          state: StateName;
+                          x: number;
+                          y: number;
+                          selected: boolean;
+                          color: string;
+                          pop: number;
+                        } | undefined;
+                        
+                        if (!dataPoint) return null;
+                        
+                        return (
+                          <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow">
+                            <div className="mb-1 font-medium text-slate-900">
+                              {dataPoint.state}
+                            </div>
+                            <div className="space-y-0.5">
+                              <div className="text-slate-700">
+                                Hesitancy %: <span className="font-medium">
+                                  {Number.isFinite(dataPoint.x) 
+                                    ? Number(dataPoint.x).toFixed(1) 
+                                    : "N/A"}
+                                </span>
+                              </div>
+                              <div className="text-slate-700">
+                                Coverage %: <span className="font-medium">
+                                  {Number.isFinite(dataPoint.y) 
+                                    ? Number(dataPoint.y).toFixed(1) 
+                                    : "N/A"}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="mt-1 text-slate-500">
+                              Week {clampedWeek}
+                            </div>
+                          </div>
+                        );
                       }}
-                      labelFormatter={() => `Week ${clampedWeek}`}
                     />
 
                     {hasSelection && (
@@ -965,12 +994,18 @@ export default function HesitancyUptake() {
                         
                         // Get the first payload entry (the line being hovered)
                         const firstEntry = payload[0];
-                        const dataPoint = firstEntry?.payload as { x: number; y: number; w: number } | undefined;
+                        const dataPoint = firstEntry?.payload as { 
+                          x: number; 
+                          y: number; 
+                          w: number 
+                        } | undefined;
                         
                         if (!dataPoint) return null;
                         
                         // Get the state name from the line's name prop
                         const stateName = firstEntry?.name || "";
+
+                        console.log("TOOLTIP DATAPOINT:", dataPoint);
                         
                         return (
                           <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow">
@@ -979,13 +1014,6 @@ export default function HesitancyUptake() {
                             </div>
                             <div className="space-y-0.5">
                               <div className="text-slate-700">
-                                Coverage %: <span className="font-medium">
-                                  {Number.isFinite(dataPoint.y) 
-                                    ? Number(dataPoint.y).toFixed(1) 
-                                    : "N/A"}
-                                </span>
-                              </div>
-                              <div className="text-slate-700">
                                 Hesitancy %: <span className="font-medium">
                                   {Number.isFinite(dataPoint.x) 
                                     ? Number(dataPoint.x).toFixed(1) 
@@ -993,6 +1021,13 @@ export default function HesitancyUptake() {
                                 </span>
                               </div>
                             </div>
+                            <div className="text-slate-700">
+                                Coverage %: <span className="font-medium">
+                                  {Number.isFinite(dataPoint.y) 
+                                    ? Number(dataPoint.y).toFixed(1) 
+                                    : "N/A"}
+                                </span>
+                              </div>
                           </div>
                         );
                       }}
