@@ -16,6 +16,7 @@ import {
 } from "recharts";
 import { US_STATES_50, STATE_NAME_TO_USPS } from "./lib/usStates";
 import { cn } from "./lib/utils";
+import { useStateSeries, type StateSeriesPoint } from "./lib/data";
 
 /* ------------------------------------------------------------------ */
 /* Types / constants                                                   */
@@ -25,19 +26,6 @@ type StateName = (typeof US_STATES_50)[number];
 const isState = (v: string): v is StateName =>
   (US_STATES_50 as readonly string[]).includes(v);
 
-// Cleaned, fully overlapping window
-const FIRST_WEEK_ISO = "2020-12-16";
-const LAST_WEEK_ISO = "2023-05-10";
-
-// Raw CSV row subset we care about
-type FactRow = {
-  state_usps: string;
-  week_end_date: string; // ISO yyyy-mm-dd
-  vacc_pct_full_18p: string;
-  vacc_pct_any_18p: string;
-  hesitancy_pct: string;
-};
-
 // Series point used in charts (index-based week)
 type SeriesPoint = {
   week: number; // 1..N within filtered window
@@ -46,29 +34,6 @@ type SeriesPoint = {
   vaccination_any_pct: number;
   vaccination_primary_pct: number;
 };
-
-/* ------------------------------------------------------------------ */
-/* Tiny CSV helpers (duplicated from data adapter to keep this local) */
-/* ------------------------------------------------------------------ */
-
-const FACT_URL = "/data/state_week_fact.csv";
-
-function parseCSV<T = Record<string, string>>(text: string): T[] {
-  const lines = text.trim().split(/\r?\n/);
-  const headers = lines[0].split(",").map((h) => h.trim());
-  return lines.slice(1).map((ln) => {
-    const cells = ln.split(",").map((c) => c.trim());
-    const row: Record<string, string> = {};
-    headers.forEach((h, i) => (row[h] = cells[i] ?? ""));
-    return row as unknown as T;
-  });
-}
-
-function toNum(s: string | undefined) {
-  if (!s) return NaN;
-  const v = +s;
-  return Number.isFinite(v) ? v : NaN;
-}
 
 /* ------------------------------------------------------------------ */
 /* Color + population helpers                                         */
@@ -200,96 +165,33 @@ const STATE_ABBR: Record<StateName, string> = {
 };
 
 /* ------------------------------------------------------------------ */
-/* Local hook: real hesitancy + coverage series from cleaned CSV      */
+/* Helper: convert StateSeriesPoint[] to SeriesPoint[]                */
 /* ------------------------------------------------------------------ */
 
-type HesCovData = {
-  weeksIso: string[];
-  // keyed by state USPS (e.g., "CA")
-  byUsps: Record<string, SeriesPoint[]>;
-};
-
-function useHesCovData(): {
-  data: HesCovData | null;
-  loading: boolean;
-  error?: string;
-} {
-  const [data, setData] = useState<HesCovData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | undefined>();
-
-  useEffect(() => {
-    let mounted = true;
-
-    (async () => {
-      try {
-        setLoading(true);
-        const res = await fetch(FACT_URL);
-        const txt = await res.text();
-        const fact = parseCSV<FactRow>(txt);
-
-        // Collect distinct weeks within the fully-covered window
-        const weekSet = new Set<string>();
-        for (const r of fact) {
-          const d = r.week_end_date;
-          if (!d) continue;
-          if (d < FIRST_WEEK_ISO || d > LAST_WEEK_ISO) continue;
-          weekSet.add(d);
-        }
-        const weeksIso = Array.from(weekSet).sort(); // lexicographic works for ISO dates
-        const weekIndex = new Map<string, number>();
-        weeksIso.forEach((w, i) => weekIndex.set(w, i));
-
-        // Build base arrays per USPS
-        const byUsps: Record<string, SeriesPoint[]> = {};
-        const makeEmptySeries = () =>
-          weeksIso.map((_, i) => ({
-            week: i + 1,
-            weekLabel: `W${String(i + 1).padStart(2, "0")}`,
-            hesitancy_pct: NaN,
-            vaccination_any_pct: NaN,
-            vaccination_primary_pct: NaN,
-          }));
-
-        for (const r of fact) {
-          const d = r.week_end_date;
-          if (!d) continue;
-          if (d < FIRST_WEEK_ISO || d > LAST_WEEK_ISO) continue;
-
-          const idx = weekIndex.get(d);
-          if (idx === undefined) continue;
-
-          const usps = r.state_usps;
-          if (!usps) continue;
-
-          if (!byUsps[usps]) {
-            byUsps[usps] = makeEmptySeries();
-          }
-
-          const row = byUsps[usps][idx];
-          const hesRaw = toNum(r.hesitancy_pct);
-          row.hesitancy_pct = 
-          Number.isFinite(hesRaw) ? (hesRaw <= 1 ? hesRaw * 100 : hesRaw) : NaN;
-          row.vaccination_any_pct = toNum(r.vacc_pct_any_18p);
-          row.vaccination_primary_pct = toNum(r.vacc_pct_full_18p);
-        }
-
-        if (!mounted) return;
-        setData({ weeksIso, byUsps });
-        setLoading(false);
-      } catch (e) {
-        if (!mounted) return;
-        setErr(String(e));
-        setLoading(false);
-      }
-    })();
-
-    return () => {
-      mounted = false;
+function convertToSeriesPoints(
+  stateSeries: StateSeriesPoint[],
+  weeks: string[]
+): SeriesPoint[] {
+  return stateSeries.map((p) => {
+    // Use weekIndex which is already 1-based from data.ts
+    const weekNum = p.weekIndex || weeks.indexOf(p.week) + 1;
+    // Handle hesitancy_pct: if it's <= 1, assume it's a decimal and convert to percentage
+    let hesPct = p.hesitancy_pct;
+    if (Number.isFinite(hesPct) && hesPct <= 1 && hesPct > 0) {
+      hesPct = hesPct * 100;
+    }
+    return {
+      week: weekNum,
+      weekLabel: `W${String(weekNum).padStart(2, "0")}`,
+      hesitancy_pct: Number.isFinite(hesPct) ? hesPct : NaN,
+      vaccination_any_pct: Number.isFinite(p.vaccination_any_pct)
+        ? p.vaccination_any_pct
+        : NaN,
+      vaccination_primary_pct: Number.isFinite(p.vaccination_primary_pct)
+        ? p.vaccination_primary_pct
+        : NaN,
     };
-  }, []);
-
-  return { data, loading, error: err };
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -375,7 +277,13 @@ function erf(x: number) {
 export default function HesitancyUptake() {
   type CoverageMetric = "any" | "primary";
 
-  const { data, loading: dataLoading } = useHesCovData();
+  // Get all states' USPS codes for data loading
+  const allStateUsps = useMemo(
+    () => US_STATES_50.map((name) => STATE_NAME_TO_USPS[name]).filter(Boolean) as string[],
+    []
+  );
+
+  const { weeks, byState, loading: dataLoading } = useStateSeries(allStateUsps);
 
   const [selected, setSelected] = useState<StateName[]>([
     "California",
@@ -393,7 +301,7 @@ export default function HesitancyUptake() {
   const [scaleByPop, setScaleByPop] = useState(false);
   const [labelSelected, setLabelSelected] = useState(true);
 
-  const totalWeeks = data?.weeksIso.length ?? 126;
+  const totalWeeks = weeks.length || 126;
   const clampedWeek = Math.max(1, Math.min(week, totalWeeks));
   const weekIdx = clampedWeek - 1;
 
@@ -410,7 +318,7 @@ export default function HesitancyUptake() {
     show: false,
   });
 
-  // chip container ref for “Manage selection” focus/scroll
+  // chip container ref for "Manage selection" focus/scroll
   const chipRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -424,21 +332,21 @@ export default function HesitancyUptake() {
   // Build per-state series (keyed by state name) from USPS-based data
   const seriesByState = useMemo(() => {
     const m = new Map<StateName, SeriesPoint[]>();
-    if (!data) return m;
+    if (!byState || !weeks.length) return m;
 
     for (const stateName of US_STATES_50) {
       const usps = STATE_NAME_TO_USPS[stateName];
-      const arr = data.byUsps[usps];
-      if (arr && arr.length) {
-        m.set(stateName as StateName, arr);
+      const stateSeries = byState[usps];
+      if (stateSeries && stateSeries.length) {
+        m.set(stateName as StateName, convertToSeriesPoints(stateSeries, weeks));
       }
     }
     return m;
-  }, [data]);
+  }, [byState, weeks]);
 
-  // scatter points for all states (context) and flag “selected”
+  // scatter points for all states (context) and flag "selected"
   const scatterPoints = useMemo(() => {
-    if (!data || !seriesByState.size || dataLoading) return [];
+    if (!seriesByState.size || dataLoading) return [];
 
     const pts: {
       state: StateName;
@@ -476,7 +384,7 @@ export default function HesitancyUptake() {
     }
 
     return pts;
-  }, [seriesByState, weekIdx, coverage, selected, data, dataLoading]);
+  }, [seriesByState, weekIdx, coverage, selected, dataLoading]);
 
   // trend line (OLS) on all states to avoid selection bias
   const trend = useMemo(() => {
@@ -522,7 +430,7 @@ export default function HesitancyUptake() {
       StateName,
       { state: StateName; color: string; pts: { x: number; y: number; w: number }[] }
     >();
-    if (!data || !seriesByState.size || dataLoading) return m;
+    if (!seriesByState.size || dataLoading) return m;
 
     for (const s of US_STATES_50) {
       const arr = seriesByState.get(s as StateName);
@@ -556,7 +464,7 @@ export default function HesitancyUptake() {
       }
     }
     return m;
-  }, [seriesByState, weekIdx, coverage, data, dataLoading]);
+  }, [seriesByState, weekIdx, coverage, dataLoading]);
 
   /* -------------------------- LABELS -------------------------------- */
 
@@ -1052,23 +960,41 @@ export default function HesitancyUptake() {
                       label={yLabelCentered("Vaccination Coverage (%)")}
                     />
                     <Tooltip
-                      formatter={(val: any, name: any, ctx: any) => {
-                        const d = ctx.payload as any;
-                        return [
-                          name === "y"
-                            ? `Coverage %: ${Number(val).toFixed(1)}`
-                            : name === "x"
-                            ? `Hesitancy %: ${Number(val).toFixed(1)}`
-                            : val,
-                          "",
-                        ];
-                      }}
-                      labelFormatter={(label: any, payload: any) => {
-                        const p =
-                          payload &&
-                          payload[0] &&
-                          (payload[0].payload as any);
-                        return `${p?.state ?? ""} — Week ${p?.w ?? ""}`;
+                      content={({ active, payload }) => {
+                        if (!active || !payload || !payload.length) return null;
+                        
+                        // Get the first payload entry (the line being hovered)
+                        const firstEntry = payload[0];
+                        const dataPoint = firstEntry?.payload as { x: number; y: number; w: number } | undefined;
+                        
+                        if (!dataPoint) return null;
+                        
+                        // Get the state name from the line's name prop
+                        const stateName = firstEntry?.name || "";
+                        
+                        return (
+                          <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow">
+                            <div className="mb-1 font-medium text-slate-900">
+                              {stateName} — Week {dataPoint.w}
+                            </div>
+                            <div className="space-y-0.5">
+                              <div className="text-slate-700">
+                                Coverage %: <span className="font-medium">
+                                  {Number.isFinite(dataPoint.y) 
+                                    ? Number(dataPoint.y).toFixed(1) 
+                                    : "N/A"}
+                                </span>
+                              </div>
+                              <div className="text-slate-700">
+                                Hesitancy %: <span className="font-medium">
+                                  {Number.isFinite(dataPoint.x) 
+                                    ? Number(dataPoint.x).toFixed(1) 
+                                    : "N/A"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        );
                       }}
                     />
 
@@ -1087,6 +1013,7 @@ export default function HesitancyUptake() {
                               data={pts}
                               type="monotone"
                               dataKey="y"
+                              name={s}
                               dot={false}
                               stroke={color}
                               strokeWidth={isSel ? 3 : 2}
