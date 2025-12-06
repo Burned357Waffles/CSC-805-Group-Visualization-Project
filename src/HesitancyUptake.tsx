@@ -386,6 +386,34 @@ export default function HesitancyUptake() {
     return pts;
   }, [seriesByState, weekIdx, coverage, selected, dataLoading]);
 
+  // Population scale for bubble sizing
+  const popScale = useMemo(() => {
+    if (!scatterPoints.length) {
+      return { minPop: 0, maxPop: 0, scale: () => 5 };
+    }
+    
+    const pops = scatterPoints.map((d) => d.pop);
+    const minPop = Math.min(...pops);
+    const maxPop = Math.max(...pops);
+    
+    // Scale radius based on population with more noticeable differences
+    // Using square root scale for better visual perception
+    // Size is independent of selection - only based on population
+    return {
+      minPop,
+      maxPop,
+      scale: (pop: number) => {
+        if (minPop === maxPop) {
+          return 5;
+        }
+        // Normalize population to 0-1 using square root for better visual scaling
+        const normalized = Math.sqrt((pop - minPop) / (maxPop - minPop));
+        // Map to radius: 4-8 for all states (size doesn't change with selection)
+        return 4 + normalized * 4; // 4 to 8
+      },
+    };
+  }, [scatterPoints]);
+
   // trend line (OLS) on all states to avoid selection bias
   const trend = useMemo(() => {
     if (!scatterPoints.length) {
@@ -479,6 +507,7 @@ export default function HesitancyUptake() {
   );
 
   const hasSelection = selected.length > 0 && scatterPoints.length > 0;
+  const hasData = scatterPoints.length > 0;
 
   /* ----------------------------- Interactions ----------------------------- */
 
@@ -853,7 +882,7 @@ export default function HesitancyUptake() {
                       }}
                     />
 
-                    {hasSelection && (
+                    {hasData && (
                       <>
                         {/* Single Scatter component for all points - handles selected/unselected styling */}
                         <Scatter
@@ -864,11 +893,8 @@ export default function HesitancyUptake() {
                             const { cx, cy, payload } = props;
                             const isSelected = payload.selected;
                             const r = scaleByPop
-                              ? Math.max(
-                                  isSelected ? 5 : 3,
-                                  Math.log10((payload.pop || 1) / 1e5) + (isSelected ? 1.5 : 0)
-                                )
-                              : (isSelected ? 6 : 4);
+                              ? popScale.scale(payload.pop || 1_000_000)
+                              : 5;
                             
                             if (isSelected) {
                               return (
@@ -905,15 +931,17 @@ export default function HesitancyUptake() {
                             }
                           }}
                         />
-                        {/* OLS trend line */}
-                        <ReferenceLine
-                          segment={[
-                            { x: trend.x1, y: trend.y1 },
-                            { x: trend.x2, y: trend.y2 },
-                          ]}
-                          stroke="#64748b"
-                          strokeDasharray="4 4"
-                        />
+                        {/* OLS trend line - only show when there's data */}
+                        {scatterPoints.length > 0 && (
+                          <ReferenceLine
+                            segment={[
+                              { x: trend.x1, y: trend.y1 },
+                              { x: trend.x2, y: trend.y2 },
+                            ]}
+                            stroke="#64748b"
+                            strokeDasharray="4 4"
+                          />
+                        )}
                       </>
                     )}
                   </ScatterChart>
@@ -1031,14 +1059,15 @@ export default function HesitancyUptake() {
                       }}
                     />
 
-                    {hasSelection && (
+                    {hasData && (
                       <>
                         {US_STATES_50.map((s) => {
                           const entry = pathByState.get(s as StateName);
                           if (!entry) return null;
                           const { pts, color } = entry;
                           const isSel = selected.includes(s as StateName);
-                          if (selected.length > 10 && !isSel) return null;
+                          // Show all states when no selection, or filter when >10 selected
+                          if (selected.length > 0 && selected.length > 10 && !isSel) return null;
 
                           return (
                             <Line
@@ -1056,7 +1085,7 @@ export default function HesitancyUptake() {
                           );
                         })}
 
-                        {/* current endpoints with halo */}
+                        {/* current endpoints with halo - only for selected states */}
                         {selected.map((s) => {
                           const entry = pathByState.get(s as StateName);
                           if (!entry || !entry.pts.length) return null;
