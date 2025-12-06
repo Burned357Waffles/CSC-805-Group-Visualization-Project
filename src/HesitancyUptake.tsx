@@ -983,46 +983,46 @@ export default function HesitancyUptake() {
                     <Tooltip
                       content={({ active, payload }) => {
                         if (!active || !payload || !payload.length) return null;
-                        
-                        // In Recharts LineChart, each Line component creates a payload entry
-                        // payload[0].name contains the Line's name prop (the state name)
-                        // payload[0].payload contains the data point
-                        // When multiple lines are at the same x position, payload may have multiple entries
-                        // We want to show the one that's actually being hovered
-                        const firstEntry = payload[0];
-                        if (!firstEntry) return null;
-                        
-                        const dataPoint = firstEntry.payload as { 
-                          x: number; 
-                          y: number; 
-                          w: number 
-                        } | undefined;
-                        
-                        if (!dataPoint) return null;
-                        
-                        // Get the state name from the line's name prop
-                        const stateName = firstEntry.name as string || "";
-                        
-                        if (!stateName) return null;
-                        
+
+                        // Use the payload entry's 'name' (the Line's name prop) to look up the series.
+                        const entry = payload[0]; // still get the entry to know the state name
+                        const stateName = (entry && (entry.name as string)) || "";
+
+                        // Try to get the hovered point (some cases it's useful)
+                        const hoveredPoint = (entry && entry.payload && {
+                          x: (entry.payload as any).x,
+                          y: (entry.payload as any).y,
+                          w: (entry.payload as any).w,
+                        }) as { x: number; y: number; w: number } | undefined;
+
+                        // Fallback: use the last point from pathByState for the currently selected week
+                        const series = stateName ? pathByState.get(stateName as StateName) : undefined;
+                        const endpoint =
+                          series && series.pts && series.pts.length
+                            ? series.pts[series.pts.length - 1]
+                            : undefined;
+
+                        // Decide which to show: prefer endpoint (selected week). If no endpoint,
+                        // fall back to hoveredPoint so tooltip still works for partial series.
+                        const showPoint = endpoint ?? hoveredPoint;
+                        if (!showPoint) return null;
+
                         return (
                           <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs shadow">
                             <div className="mb-1 font-medium text-slate-900">
-                              {stateName} — Week {dataPoint.w}
+                              {stateName} — Week {showPoint.w}
                             </div>
                             <div className="space-y-0.5">
                               <div className="text-slate-700">
-                                Hesitancy %: <span className="font-medium">
-                                  {Number.isFinite(dataPoint.x) 
-                                    ? Number(dataPoint.x).toFixed(1) 
-                                    : "N/A"}
+                                Hesitancy %:{" "}
+                                <span className="font-medium">
+                                  {Number.isFinite(showPoint.x) ? showPoint.x.toFixed(1) : "N/A"}
                                 </span>
                               </div>
                               <div className="text-slate-700">
-                                Coverage %: <span className="font-medium">
-                                  {Number.isFinite(dataPoint.y) 
-                                    ? Number(dataPoint.y).toFixed(1) 
-                                    : "N/A"}
+                                Coverage %:{" "}
+                                <span className="font-medium">
+                                  {Number.isFinite(showPoint.y) ? showPoint.y.toFixed(1) : "N/A"}
                                 </span>
                               </div>
                             </div>
