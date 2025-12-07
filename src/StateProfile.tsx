@@ -288,14 +288,16 @@ function InsideLeftYAxisLabel(props: {
                 id="week"
                 type="range"
                 min={1}
-                max={52}
-                value={week}
+                max={natLength}
+                value={clampedWeek}
                 onChange={(e) => setWeek(Number(e.target.value))}
                 className="mt-2 w-full"
               />
-              <div className="text-xs text-slate-500 mt-1">Week {week} of 52</div>
+              <div className="text-xs text-slate-500 mt-1">
+                Week {clampedWeek} of {natLength}
+              </div>
             </div>
-
+            
             <div className="mt-6">
               <div className="text-sm font-semibold text-slate-700 mb-2">
                 Smoothing (cases/deaths)
@@ -353,8 +355,9 @@ function InsideLeftYAxisLabel(props: {
                     {selectedState}
                   </h2>
                   <p className="mt-1 text-slate-500 text-lg">
-                    Data reflects {toWeekLabel(week)} 2024
+                    Data reflects {toWeekLabel(clampedWeek)} 2024
                   </p>
+
                 </div>
                 <p className="text-slate-500 text-lg">
                   Descriptive only; correlation ≠ causation
