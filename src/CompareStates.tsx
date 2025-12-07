@@ -148,9 +148,14 @@ export default function CompareStates() {
   const [picker, setPicker] = useState<string>("");
   const [outcome, setOutcome] = useState<"cases" | "deaths">("cases");
   const [lag, setLag] = useState<number>(4);
+  
+  // Get national timeline to determine max weeks
+  const { data: nat } = useNationalTimeline();
+  const natLength = nat?.length ?? 52;
+  
   const [range, setRange] = useState<{ start: number; end: number }>({
     start: 1,
-    end: 52,
+    end: natLength,
   });
 
   // --- Playback state (PATCH) ---
@@ -174,6 +179,13 @@ export default function CompareStates() {
     setFrame(0);
   }, [range.start, range.end]);
 
+  // Update range end when national timeline data loads (if still at initial value)
+  useEffect(() => {
+    if (natLength > 52 && range.end === 52) {
+      setRange((r) => ({ ...r, end: natLength }));
+    }
+  }, [natLength]);
+
   // animated end week the charts should use
   const animEnd = Math.min(range.end, range.start + frame);
 
@@ -181,7 +193,7 @@ export default function CompareStates() {
     setChosen([]);
     setOutcome("cases");
     setLag(4);
-    setRange({ start: 1, end: 52 });
+    setRange({ start: 1, end: natLength });
   };
 
   const addState = (name: string) => {
@@ -237,28 +249,25 @@ const { byState: seriesByUsps } = useStateSeries(stateUspsList);
   const clipped = useMemo(() => {
     const m = new Map<string, SeriesPoint[]>();
     seriesByState.forEach((arr, s) => {
-      const start = Math.max(1, Math.min(52, range.start)) - 1;
-      const end = Math.max(1, Math.min(52, animEnd)) - 1;
+      const start = Math.max(1, Math.min(natLength, range.start)) - 1;
+      const end = Math.max(1, Math.min(natLength, animEnd)) - 1;
       m.set(s, arr.slice(start, end + 1));
     });
     return m;
-  }, [seriesByState, range.start, animEnd]);
+  }, [seriesByState, range.start, animEnd, natLength]);
 
   // full series for the selected range (always visible for line charts)
   const fullInRange = useMemo(() => {
     const m = new Map<string, SeriesPoint[]>();
     seriesByState.forEach((arr, s) => {
-      const start = Math.max(1, Math.min(52, range.start)) - 1;
-      const end = Math.max(1, Math.min(52, range.end)) - 1;
+      const start = Math.max(1, Math.min(natLength, range.start)) - 1;
+      const end = Math.max(1, Math.min(natLength, range.end)) - 1;
       m.set(s, arr.slice(start, end + 1));
     });
     return m;
-  }, [seriesByState, range.start, range.end]);
+  }, [seriesByState, range.start, range.end, natLength]);
 
   /* ------------ Real KPI data: national weeks + per-state KPIs ----- */
-
-  // national timeline to map "week number" → ISO date
-  const { data: nat } = useNationalTimeline();
 
   const weekIso = useMemo(() => {
     if (!nat?.length) return "";
@@ -429,7 +438,7 @@ const { byState: seriesByUsps } = useStateSeries(stateUspsList);
                       <input
                         type="range"
                         min={1}
-                        max={52}
+                        max={natLength}
                         value={range.start}
                         onChange={(e) =>
                           setRange((r) => {
@@ -447,7 +456,7 @@ const { byState: seriesByUsps } = useStateSeries(stateUspsList);
                       <input
                         type="range"
                         min={1}
-                        max={52}
+                        max={natLength}
                         value={range.end}
                         onChange={(e) =>
                           setRange((r) => {
