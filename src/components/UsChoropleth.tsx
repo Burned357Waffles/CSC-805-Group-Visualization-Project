@@ -29,7 +29,8 @@ export default function UsChoropleth({
   const setStateCode = useAppStore((s) => s.setState);
 
   // Convert week index to ISO string using national timeline
-  const weekIndex = useAppStore((s) => s.week);
+  // Use rangeEnd to match what Overview.tsx uses for the week label
+  const weekIndex = useAppStore((s) => s.rangeEnd);
   const { data: nat } = useNationalTimeline();
   
   // Get the ISO week string from the national timeline
@@ -186,6 +187,20 @@ export default function UsChoropleth({
         const code = FIPS_TO_STATE_CODE[fips];
         // Selected state at full opacity, others more dimmed when a state is selected
         return selectedUsps && code !== selectedUsps ? 0.35 : 1;
+      })
+      // Update event handlers for all paths (both new and existing) to use latest byFips and outcome
+      .on("mouseenter", (e, d: any) => handleHover(d, e))
+      .on("mousemove", (e, d: any) => handleHover(d, e))
+      .on("mouseleave", () => setTt((t) => ({ ...t, show: false })))
+      .on("click", (_e, d: any) => {
+        const fips = String(d.id).padStart(2, "0");
+        const code = FIPS_TO_STATE_CODE[fips];
+        if (code) {
+          const stateName = STATE_CODE_TO_NAME[code];
+          // Toggle: if clicking the same state, reset to "All states"
+          const newState = stateName === stateCode ? "All states" : stateName;
+          setStateCode(newState);
+        }
       });
 
     function handleHover(d: any, ev: any) {
@@ -198,6 +213,7 @@ export default function UsChoropleth({
 
       const html = `
         <div class="text-slate-900 font-semibold">${name}</div>
+        <div class="text-slate-500 text-xs">Week ${weekIndex}${weekIso ? ` (${weekIso})` : ""}</div>
         <div class="text-slate-600">${OUTCOME_LABEL[outcome]}:
           <span class="font-medium">${numberFmt(
             Number(val ?? NaN),
@@ -209,13 +225,13 @@ export default function UsChoropleth({
       const [mx, my] = d3.pointer(ev, svgRef.current);
       const pad = 14;
       const w = 200;
-      const h = 40;
+      const h = 60;
       const x = Math.min(Math.max(mx + 12, pad), width - w - pad);
       const y = Math.min(Math.max(my + 12, pad), height - h - pad);
 
       setTt({ show: true, x, y, html });
     }
-  }, [states, outcome, color, path, width, height, stateCode, byFips, setStateCode]);
+  }, [states, outcome, color, path, width, height, stateCode, byFips, setStateCode, weekIndex, weekIso]);
 
   const isFiltered = stateCode !== "All states";
 
